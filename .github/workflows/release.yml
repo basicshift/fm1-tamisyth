@@ -70,6 +70,6 @@ jobs:
           name: Clock probe 0.1
           prerelease: true
           files: |
-            build/dinghy-[0-9]*.fwsc   # (the release builds, not the dev ones: dinghy-smk37.fwsc)
+            build/dinghy-[0-9]*.fwsc
             build/SHA256SUMS
           generate_release_notes: true
