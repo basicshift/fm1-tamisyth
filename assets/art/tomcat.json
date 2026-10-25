@@ -1,6 +1,6 @@
 {
  "cell": [
-  58,
+  47,
   29
  ],
  "frames": [
@@ -21,5 +21,5 @@
   "listen0",
   "listen1"
  ],
- "note": "Tomcat (drums egg 1), from assets/source/tomcat-1bit-sheet.png. 1-bit, white = ink; frames sit bottom-centred."
+ "note": "Tomcat (drums), from assets/source/tomcat-1bit-sheet.png, redrawn in the two inks: cyan (122,245,234) lines, pink (242,134,233) patches; black = empty. Frames sit bottom-centred."
 }
