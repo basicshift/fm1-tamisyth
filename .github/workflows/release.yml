@@ -62,7 +62,7 @@ jobs:
         with:
           subject-path: build/dinghy-[0-9]*.fwsc
 
-      - name: Release (clock-probe branch: the release probe-v0.1)
+      - name: Release probe-v0.1
         uses: softprops/action-gh-release@v2
         with:
           tag_name: probe-v0.1
