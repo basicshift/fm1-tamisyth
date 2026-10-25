@@ -1,0 +1,25 @@
+{
+ "cell": [
+  50,
+  37
+ ],
+ "frames": [
+  "idle0",
+  "idle1",
+  "blink",
+  "happy0",
+  "happy1",
+  "dance0",
+  "dance1",
+  "dance2",
+  "sleep0",
+  "sleep1",
+  "sad0",
+  "sad1",
+  "cheer0",
+  "cheer1",
+  "listen0",
+  "listen1"
+ ],
+ "note": "The bass creature, from assets/source/axolotl-2colour-sheet.png. Two inks: cyan (122,245,234) = the main ink, pink (242,134,233) = the accent; black = empty. Frames sit bottom-centred."
+}

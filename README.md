@@ -20,16 +20,15 @@ extras allowed.
 
 | library | eggs | adult forms | status |
 | --- | --- | --- | --- |
-| drums | Tomcat, Kitbash, Rimshot | boom bap, house, breaks, dub | 0.1 |
+| drums | Tomcat | boom bap, house, breaks, dub | 0.1 |
 | percussion | (to come) | | 0.3 |
-| bass | Deep Dragon, Ember Dragon, Frost Dragon | sub, acid, disco, funk | 0.2 |
+| bass | Lowtl (an axolotl) | sub, acid, disco, funk | 0.2 |
 | lead | (to come) | | 0.3 |
 
-Art is 1-bit, ink on a dark LCD: each strip in `assets/art` is a PNG (white = ink) with a JSON naming its frames.
-Edit them in any pixel editor and run `python3 tools/mono.py` to rebuild `firmware/src/art.h`. Deep Dragon and the
-icons come from the sheet in `assets/source`; Tomcat comes from its sheet there too. The drum line (`node tools/sprites.mjs`) stands in for Kitbash and Rimshot, and the second and third
-eggs of the other libraries are placeholders until their own art lands. The pets live on powered-on time, since the FM-1
-has no clock that runs while it is off: switched off, they sleep.
+Art uses two inks on a dark screen, cyan and pink: each strip in `assets/art` is a PNG (cyan or white = the main ink,
+pink = the accent, black = empty) with a JSON naming its frames. Edit them in any pixel editor and run
+`python3 tools/mono.py` to rebuild `firmware/src/art.h`. Tomcat and Lowtl come from the sheets in `assets/source`.
+The pets live on powered-on time, since the FM-1 has no clock that runs while it is off: switched off, they sleep.
 
 ## Controls
 

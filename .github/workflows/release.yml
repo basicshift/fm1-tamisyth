@@ -42,8 +42,8 @@ jobs:
       - name: Build the FM-1 package
         run: |
           sh build.sh
-          sh build.sh --release 0.5
-          (cd build && sha256sum dinghy-0.5*.fwsc > SHA256SUMS)
+          sh build.sh --release 0.6
+          (cd build && sha256sum dinghy-0.6*.fwsc > SHA256SUMS)
 
       - uses: actions/upload-artifact@v4
         with:
@@ -51,13 +51,13 @@ jobs:
           path: build/dinghy*.fwsc
           if-no-files-found: error
 
-      - name: Release pet-v0.5
+      - name: Release pet-v0.6
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: pet-v0.5
+          tag_name: pet-v0.6
           target_commitish: ${{ github.sha }}
-          name: Tamisynth 0.5
+          name: Tamisynth 0.6
           prerelease: true
           files: |
-            build/dinghy-0.5.fwsc
+            build/dinghy-0.6.fwsc
             build/SHA256SUMS

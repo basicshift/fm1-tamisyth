@@ -21,7 +21,7 @@
 static void app_idle(void);
 #define LCD_IDLE app_idle
 #include "platform.c"
-typedef struct { uint8_t w, h; const uint8_t *bits; } art_t;
+typedef struct { uint8_t w, h; const uint8_t *bits, *accent; } art_t;   /* two inks, 1 bit a pixel each */
 #include "art.h"                               /* tools/mono.py, from the PNG strips in assets/art */
 
 static void app_idle(void) {}
@@ -150,9 +150,8 @@ enum { ST_EGG, ST_BABY, ST_CHILD, ST_TEEN, ST_ADULT };
 #define NPET 8u
 static const char *const LIB_NAME[NLIB] = {"DRUMS", "PERCUSSION", "BASS", "LEAD"};
 static const uint8_t LIB_READY[NLIB] = {1, 0, 1, 0};
-static const char *const EGG_NAME[NLIB][3] = {   /* (the second and third of each: placeholder names) */
-    {"TOMCAT", "KITBASH", "RIMSHOT"}, {"?", "?", "?"},
-    {"DEEP DRAGON", "EMBER DRAGON", "FROST DRAGON"}, {"?", "?", "?"}};
+static const char *const EGG_NAME[NLIB][3] = {   /* one creature a library for now (the egg draw picks among three) */
+    {"TOMCAT", "TOMCAT", "TOMCAT"}, {"?", "?", "?"}, {"LOWTL", "LOWTL", "LOWTL"}, {"?", "?", "?"}};
 static const char *const STAGE_WORD[4] = {"egg", "baby", "child", "teen"};
 static const char *const FORM_NAME[NLIB][4] = {
     {"boom bap", "house", "breaks", "dub"}, {"", "", "", ""}, {"sub", "acid", "disco", "funk"}, {"", "", "", ""}};
@@ -297,10 +296,7 @@ static int new_pet(uint32_t lib)
     memset(&sv.pet[i], 0, sizeof sv.pet[i]);
     sv.pet[i].used = 1;
     sv.pet[i].lib = (uint8_t)lib;
-    sv.pet[i].type = (uint8_t)(rnd() % 3u);
-#ifdef DINGHY_HOST
-    if (getenv("TAMI_TYPE")) sv.pet[i].type = (uint8_t)(atoi(getenv("TAMI_TYPE")) % 3);   /* tests: pick the egg */
-#endif
+    sv.pet[i].type = 0;                         /* one creature a library for now */
     sv.pet[i].mood = 50;
     sv.pet[i].bpm = 100;
     if (lib == LIB_DRUMS) sv.pet[i].lane[LK] = 0x0001u;
@@ -364,9 +360,10 @@ static void tick_second(void)
 }
 
 /* ======================================================================================= the screen */
-#define C_BG    RGB(10, 13, 9)                  /* the 1-bit look: ink on a dark LCD */
-#define C_INK    RGB(214, 234, 160)
-#define C_LO   RGB(70, 84, 52)
+#define C_BG    RGB(4, 6, 12)                   /* two inks on a dark screen */
+#define C_INK   RGB(122, 245, 234)              /* cyan: lines, text */
+#define C_ACC   RGB(242, 134, 233)              /* pink: what is active, what to press, the creatures' colour */
+#define C_LO    RGB(28, 70, 74)
 enum { M_RAISE, M_NEST, M_PICK, M_HATCH, M_BAND };
 static uint32_t mode = M_NEST, cursor, lane, cur_note = 36, stop_ms, anim, t_sec;
 
@@ -388,27 +385,24 @@ static void blit_art(const art_t *a, int32_t ox, int32_t oy, int32_t sc, uint16_
         for (x = 0; x < a->w; x++)
             if (a->bits[y * bpr + x / 8u] & (0x80u >> (x & 7u)))
                 cv_rect(ox + (int32_t)x * sc, oy + (int32_t)y * sc, sc, sc, c);
+            else if (a->accent && (a->accent[y * bpr + x / 8u] & (0x80u >> (x & 7u))))
+                cv_rect(ox + (int32_t)x * sc, oy + (int32_t)y * sc, sc, sc, c == C_LO ? C_LO : C_ACC);
 }
 static int asleep(void) { return mode == M_RAISE && !playing && fm1_ms - stop_ms > 60000u; }
 typedef struct { uint8_t idle0, idle1, blink, happy, dance, sleep, sad, cheer; } anim_t;   /* pairs / a triple follow */
-static const anim_t DRAGON_ANIM = {A_DEEP_DRAGON_IDLE0, A_DEEP_DRAGON_IDLE1, A_DEEP_DRAGON_BLINK, A_DEEP_DRAGON_HAPPY0,
-                                   A_DEEP_DRAGON_DANCE0, A_DEEP_DRAGON_SLEEP0, A_DEEP_DRAGON_SAD0, A_DEEP_DRAGON_CHEER0};
+static const anim_t AXOLOTL_ANIM = {A_AXOLOTL_IDLE0, A_AXOLOTL_IDLE1, A_AXOLOTL_BLINK, A_AXOLOTL_HAPPY0,
+                                    A_AXOLOTL_DANCE0, A_AXOLOTL_SLEEP0, A_AXOLOTL_SAD0, A_AXOLOTL_CHEER0};
 static const anim_t TOMCAT_ANIM = {A_TOMCAT_IDLE0, A_TOMCAT_IDLE1, A_TOMCAT_BLINK, A_TOMCAT_HAPPY0,
                                    A_TOMCAT_DANCE0, A_TOMCAT_SLEEP0, A_TOMCAT_SAD0, A_TOMCAT_CHEER0};
-static const anim_t *anim_of(const pet_t *p)    /* the creatures drawn so far; the others are placeholders */
+static const anim_t *anim_of(const pet_t *p)
 {
-    if (p->lib == LIB_DRUMS && p->type == 0u) return &TOMCAT_ANIM;
-    if (p->lib == LIB_BASS) return &DRAGON_ANIM;
-    return 0;
+    return p->lib == LIB_DRUMS ? &TOMCAT_ANIM : p->lib == LIB_BASS ? &AXOLOTL_ANIM : 0;
 }
 static const art_t *pet_art(const pet_t *p, int dancing)
 {
-    static const uint8_t KID[4] = {A_DRUM_LINE_EGG, A_DRUM_LINE_BLIP, A_DRUM_LINE_KIK, A_DRUM_LINE_HATLING};
-    static const uint8_t ADULT[4] = {A_DRUM_LINE_CRATE, A_DRUM_LINE_FOURFLOOR, A_DRUM_LINE_CHOPPER, A_DRUM_LINE_ECHO};
     const anim_t *an = anim_of(p);
     int mine = p == P && mode == M_RAISE;
-    if (p->stage == ST_EGG) return &ART[A_DRUM_LINE_EGG];
-    if (!an) return &ART[p->stage < ST_ADULT ? KID[p->stage] : ADULT[p->form & 3u]];
+    if (p->stage == ST_EGG || !an) return &ART[A_EGG_EGG];
     if (mine && fm1_ms < cheer_until) return &ART[an->cheer + (anim & 1u)];
     if (mine && fm1_ms < happy_until) return &ART[an->happy + (anim & 1u)];
     if (dancing) return &ART[an->dance + anim % 3u];
@@ -447,8 +441,8 @@ static void draw_icons(void)                    /* 0..28: what the pet is doing,
     for (k = 0; k < 6u; k++) {
         const art_t *a = &ART[ICON[k]];
         int32_t cx = 20 + (int32_t)k * 40;
-        blit_art(a, cx - (int32_t)a->w / 2, 2, 1, on[k] ? C_INK : C_LO);
-        if (on[k]) cv_rect(cx - 10, 25, 20, 2, C_INK);
+        blit_art(a, cx - (int32_t)a->w / 2, 2, 1, on[k] ? C_ACC : C_LO);
+        if (on[k]) cv_rect(cx - 10, 25, 20, 2, C_ACC);
     }
     cv_rect(0, 27, 240, 1, C_LO);
     cv_blit(0, 0);
@@ -462,7 +456,7 @@ static void draw_top(void)                      /* 28..46: name, then food pips 
         uint32_t fed = (100u - P->hunger + 10u) / 20u, joy = (P->mood + 10u) / 20u;
         for (k = 0; k < 5u; k++) {
             if (k < fed) cv_rect(150 + (int32_t)k * 8, 6, 6, 6, C_INK); else box(150 + (int32_t)k * 8, 6, 6, 6, C_LO);
-            heart(194 + (int32_t)k * 9, 6, k < joy ? C_INK : C_LO);
+            heart(194 + (int32_t)k * 9, 6, k < joy ? C_ACC : C_LO);
         }
     }
     cv_blit(0, 28);
@@ -471,8 +465,13 @@ static void draw_top(void)                      /* 28..46: name, then food pips 
 static void draw_pet(int bob)                   /* 46..158 */
 {
     const art_t *a = pet_art(P, playing);
+    const anim_t *an = anim_of(P);
     char b[24], *p;
-    int32_t sc = a->h * 3u <= 100u ? 3 : 2, w = (int32_t)a->w * sc, h = (int32_t)a->h * sc;
+    uint32_t tall = a->h, i;
+    int32_t sc, w, h;
+    if (an && P->stage != ST_EGG)               /* one size for all of a creature's frames: its tallest decides */
+        for (i = an->idle0; i < an->idle0 + 16u && i < A_COUNT; i++) if (ART[i].h > tall) tall = ART[i].h;
+    sc = tall * 3u <= 104u ? 3 : 2; w = (int32_t)a->w * sc; h = (int32_t)a->h * sc;
     cv_begin(240, 112, C_BG);
     cv_text(4, 0, &FONT_S, P->stage < ST_ADULT ? STAGE_WORD[P->stage] : FORM_NAME[P->lib][P->form & 3u], C_LO);
     p = cat(put_u(b, bpm), " bpm");
@@ -549,7 +548,7 @@ static void draw_words(void)                    /* 158..192 */
     cv_begin(240, 34, C_BG);
     if (fm1_ms < say_until) cv_text(6, 2, &FONT_S, say, C_INK);
     else if (guide_txt) {                       /* the next thing to do, with an arrow */
-        cv_rect(6, 6, 8, 8, C_INK);
+        cv_rect(6, 6, 8, 8, C_ACC);
         cv_text(20, 2, &FONT_S, guide_txt, C_INK);
     } else cv_text(6, 2, &FONT_S, P->stage < ST_ADULT ? LESSON[P->lib][P->stage] : ADULT_TIP[P->lib][P->form & 3u], C_INK);
     if (P->stage < ST_ADULT) {
@@ -575,7 +574,7 @@ static void draw_grid(void)                     /* 192..240 */
                 else {
                     box(x, y, 11, 13, s % 4u == 0 ? C_INK : C_LO);
                     if (here) cv_rect(x + 2, y + 2, 7, 9, C_LO);
-                    if (l == lane && (guide_bits >> s & 1u)) cv_rect(x + 4, y + 5, 3, 3, C_INK);   /* tap here */
+                    if (l == lane && (guide_bits >> s & 1u)) cv_rect(x + 3, y + 4, 5, 5, C_ACC);   /* tap here */
                 }
             }
         }
@@ -596,7 +595,7 @@ static void draw_grid(void)                     /* 192..240 */
                 if (hgt < 4) hgt = 4;
                 if (here) box(x, 44 - hgt, 11, hgt, C_INK); else cv_rect(x, 44 - hgt, 11, hgt, C_INK);
             } else if (here) cv_rect(x, 40, 11, 4, C_LO);
-            if (guide_bits >> s & 1u) { box(x, 30, 11, 11, C_INK); cv_rect(x + 4, 34, 3, 3, C_INK); }   /* tap here */
+            if (guide_bits >> s & 1u) { box(x, 30, 11, 11, C_ACC); cv_rect(x + 3, 33, 5, 5, C_ACC); }   /* tap here */
         }
     }
     cv_blit(0, 192);
@@ -660,7 +659,7 @@ static void draw_pick(void)
 static void draw_hatch(void)
 {
     char b[40];
-    const art_t *a = &ART[A_DRUM_LINE_EGG];
+    const art_t *a = &ART[A_EGG_EGG];
     lcd_fill(0, 0, 240, 240, C_BG);
     draw_text_box(0, 8, 240, &FONT_S, "You got", C_LO, 1);
     draw_text_box(0, 26, 240, &FONT_L, EGG_NAME[P->lib][P->type % 3u], C_INK, 1);
@@ -760,6 +759,7 @@ static void app_main(void)
 
     rng_x = 0x2545F491u ^ fm1_ticks();
     if (settings_load(&sv, sizeof sv) || sv.version != SAVE_VERSION) { memset(&sv, 0, sizeof sv); sv.version = SAVE_VERSION; sv.band_bpm = 100; }
+    for (uint32_t i = 0; i < NPET; i++) sv.pet[i].type = 0;   /* the retired second and third creatures */
     if (sv.cur < NPET && sv.pet[sv.cur].used) { P = &sv.pet[sv.cur]; go(M_RAISE); say_it("*yawn* ...hi!", 2500); }
     else { P = &sv.pet[0]; go(M_NEST); }
     last_seq = bar_seq;

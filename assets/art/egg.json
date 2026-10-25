@@ -1,0 +1,10 @@
+{
+ "cell": [
+  40,
+  40
+ ],
+ "frames": [
+  "egg"
+ ],
+ "note": "The egg every creature hatches from. 1-bit, white = ink."
+}
