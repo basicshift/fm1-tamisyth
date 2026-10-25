@@ -265,6 +265,9 @@ static int new_pet(uint32_t lib)
     sv.pet[i].used = 1;
     sv.pet[i].lib = (uint8_t)lib;
     sv.pet[i].type = (uint8_t)(rnd() % 3u);
+#ifdef DINGHY_HOST
+    if (getenv("TAMI_TYPE")) sv.pet[i].type = (uint8_t)(atoi(getenv("TAMI_TYPE")) % 3);   /* tests: pick the egg */
+#endif
     sv.pet[i].mood = 50;
     sv.pet[i].bpm = 100;
     if (lib == LIB_DRUMS) sv.pet[i].lane[LK] = 0x0001u;
@@ -354,21 +357,34 @@ static void blit_art(const art_t *a, int32_t ox, int32_t oy, int32_t sc, uint16_
                 cv_rect(ox + (int32_t)x * sc, oy + (int32_t)y * sc, sc, sc, c);
 }
 static int asleep(void) { return mode == M_RAISE && !playing && fm1_ms - stop_ms > 60000u; }
+typedef struct { uint8_t idle0, idle1, blink, happy, dance, sleep, sad, cheer; } anim_t;   /* pairs / a triple follow */
+static const anim_t DRAGON_ANIM = {A_DEEP_DRAGON_IDLE0, A_DEEP_DRAGON_IDLE1, A_DEEP_DRAGON_BLINK, A_DEEP_DRAGON_HAPPY0,
+                                   A_DEEP_DRAGON_DANCE0, A_DEEP_DRAGON_SLEEP0, A_DEEP_DRAGON_SAD0, A_DEEP_DRAGON_CHEER0};
+static const anim_t TOMCAT_ANIM = {A_TOMCAT_IDLE0, A_TOMCAT_IDLE1, A_TOMCAT_BLINK, A_TOMCAT_HAPPY0,
+                                   A_TOMCAT_DANCE0, A_TOMCAT_SLEEP0, A_TOMCAT_SAD0, A_TOMCAT_CHEER0};
+static const anim_t *anim_of(const pet_t *p)    /* the creatures drawn so far; the others are placeholders */
+{
+    if (p->lib == LIB_DRUMS && p->type == 0u) return &TOMCAT_ANIM;
+    if (p->lib == LIB_BASS) return &DRAGON_ANIM;
+    return 0;
+}
 static const art_t *pet_art(const pet_t *p, int dancing)
 {
     static const uint8_t KID[4] = {A_DRUM_LINE_EGG, A_DRUM_LINE_BLIP, A_DRUM_LINE_KIK, A_DRUM_LINE_HATLING};
     static const uint8_t ADULT[4] = {A_DRUM_LINE_CRATE, A_DRUM_LINE_FOURFLOOR, A_DRUM_LINE_CHOPPER, A_DRUM_LINE_ECHO};
-    static const uint8_t IDLE[8] = {A_DEEP_DRAGON_IDLE0, A_DEEP_DRAGON_IDLE1, A_DEEP_DRAGON_IDLE0, A_DEEP_DRAGON_BLINK,
-                                    A_DEEP_DRAGON_IDLE1, A_DEEP_DRAGON_IDLE0, A_DEEP_DRAGON_IDLE1, A_DEEP_DRAGON_IDLE0};
+    const anim_t *an = anim_of(p);
     int mine = p == P && mode == M_RAISE;
     if (p->stage == ST_EGG) return &ART[A_DRUM_LINE_EGG];
-    if (p->lib == LIB_DRUMS) return &ART[p->stage < ST_ADULT ? KID[p->stage] : ADULT[p->form & 3u]];
-    if (mine && fm1_ms < cheer_until) return &ART[A_DEEP_DRAGON_CHEER0 + (anim & 1u)];
-    if (mine && fm1_ms < happy_until) return &ART[A_DEEP_DRAGON_HAPPY0 + (anim & 1u)];
-    if (dancing) return &ART[A_DEEP_DRAGON_DANCE0 + anim % 3u];
-    if (mine && asleep()) return &ART[A_DEEP_DRAGON_SLEEP0 + (anim >> 2 & 1u)];
-    if (p->hunger > 70u || p->mood < 30u) return &ART[A_DEEP_DRAGON_SAD0 + (anim >> 1 & 1u)];
-    return &ART[IDLE[anim & 7u]];
+    if (!an) return &ART[p->stage < ST_ADULT ? KID[p->stage] : ADULT[p->form & 3u]];
+    if (mine && fm1_ms < cheer_until) return &ART[an->cheer + (anim & 1u)];
+    if (mine && fm1_ms < happy_until) return &ART[an->happy + (anim & 1u)];
+    if (dancing) return &ART[an->dance + anim % 3u];
+    if (mine && asleep()) return &ART[an->sleep + (anim >> 2 & 1u)];
+    if (p->hunger > 70u || p->mood < 30u) return &ART[an->sad + (anim >> 1 & 1u)];
+    {
+        uint8_t seq[8] = {an->idle0, an->idle1, an->idle0, an->blink, an->idle1, an->idle0, an->idle1, an->idle0};
+        return &ART[seq[anim & 7u]];
+    }
 }
 static void name_of(char *b, const pet_t *p)
 {
@@ -430,8 +446,8 @@ static void draw_pet(int bob)                   /* 46..158 */
     if (swing) { p = cat(p, " sw"); cat(put_u(p, swing * 100u / 256u), "%"); }
     cv_text(236 - text_w(&FONT_S, b), 0, &FONT_S, b, C_LO);
     cv_rect(40, 108, 160, 1, C_LO);
-    blit_art(a, (240 - w) / 2, 107 - h - (bob && P->lib == LIB_DRUMS ? 3 : 0), sc, C_INK);
-    if (P->lib == LIB_DRUMS && asleep()) cv_text(176, 30, &FONT_S, "z z", C_LO);
+    blit_art(a, (240 - w) / 2, 107 - h - (bob && !anim_of(P) ? 3 : 0), sc, C_INK);
+    if (!anim_of(P) && asleep()) cv_text(176, 30, &FONT_S, "z z", C_LO);
     cv_blit(0, 46);
 }
 static void draw_words(void)                    /* 158..192 */
@@ -783,7 +799,7 @@ static void app_main(void)
         while (fm1_ms - t_sec >= 1000u) { t_sec += 1000u; tick_second(); }
         if ((dirty & 2u) || (dirty && !playing && fm1_ms - t_save > 30000u)) { save_now(); t_save = fm1_ms; }
         if (say_until && fm1_ms >= say_until) { say_until = 0; redraw |= 2u; }
-        if (P->lib != LIB_DRUMS && !playing && fm1_ms - t_anim > 600u) { t_anim = fm1_ms; anim++; redraw |= 8u; }
+        if (anim_of(P) && !playing && fm1_ms - t_anim > 600u) { t_anim = fm1_ms; anim++; redraw |= 8u; }
         if (step != last_step) {
             last_step = step;
             if (playing && (step & 3u) == 0u) { bob = !bob; anim++; redraw |= 8u; }

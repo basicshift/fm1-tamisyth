@@ -16,8 +16,8 @@ and the band puts one pet per library together to play a song.
 
 Art is 1-bit, ink on a dark LCD: each strip in `assets/art` is a PNG (white = ink) with a JSON naming its frames.
 Edit them in any pixel editor and run `python3 tools/mono.py` to rebuild `firmware/src/art.h`. Deep Dragon and the
-icons come from the sheet in `assets/source`; the drum line (`node tools/sprites.mjs`) and the second and third
-egg of each library are placeholders until their own art lands. The pets live on powered-on time, since the FM-1
+icons come from the sheet in `assets/source`; Tomcat comes from its sheet there too. The drum line (`node tools/sprites.mjs`) stands in for Kitbash and Rimshot, and the second and third
+eggs of the other libraries are placeholders until their own art lands. The pets live on powered-on time, since the FM-1
 has no clock that runs while it is off: switched off, they sleep.
 
 ## Controls

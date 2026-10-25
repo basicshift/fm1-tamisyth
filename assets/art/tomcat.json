@@ -1,0 +1,25 @@
+{
+ "cell": [
+  58,
+  29
+ ],
+ "frames": [
+  "idle0",
+  "idle1",
+  "blink",
+  "happy0",
+  "happy1",
+  "dance0",
+  "dance1",
+  "dance2",
+  "sleep0",
+  "sleep1",
+  "sad0",
+  "sad1",
+  "cheer0",
+  "cheer1",
+  "listen0",
+  "listen1"
+ ],
+ "note": "Tomcat (drums egg 1), from assets/source/tomcat-1bit-sheet.png. 1-bit, white = ink; frames sit bottom-centred."
+}
