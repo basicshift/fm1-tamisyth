@@ -43,10 +43,9 @@ jobs:
       - name: Build the FM-1 package
         run: sh build.sh
 
-      - name: Release package (tags only)
-        if: github.ref_type == 'tag'
+      - name: Release package
         run: |
-          V="${GITHUB_REF_NAME#v}"
+          V=0.1
           sh build.sh --release "$V"
           ls -l build/dinghy-"$V"*.fwsc
           (cd build && sha256sum dinghy-"$V"*.fwsc > SHA256SUMS)
@@ -63,10 +62,13 @@ jobs:
         with:
           subject-path: build/dinghy-[0-9]*.fwsc
 
-      - name: Release (tags only)
-        if: github.ref_type == 'tag'
+      - name: Release (clock-probe branch: the release probe-v0.1)
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: probe-v0.1
+          target_commitish: ${{ github.sha }}
+          name: Clock probe 0.1
+          prerelease: true
           files: |
             build/dinghy-[0-9]*.fwsc   # (the release builds, not the dev ones: dinghy-smk37.fwsc)
             build/SHA256SUMS
