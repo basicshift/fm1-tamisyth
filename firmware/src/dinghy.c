@@ -1,37 +1,50 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* TAMISYNTH: a pet that lives in the M-VAVE FM-1 and eats the beats you make.
+/* TAMISYNTH: pets that live in the M-VAVE FM-1, eat the patterns you make and teach you to make them.
  * Built on Dinghy (zvenson), on Felucca's platform (Leo Kuroshita / Hugelton Instruments) as SLOOP carries it.
  *
- *   keys F3..G#4  the 16 steps of the selected lane (on / off); their LEDs show the lane, the playhead blinks
- *   keys A4 A#4 B4  play kick, snare, hat live
- *   OCT- OCT+     the lane: KICK, SNARE, HAT (KNOB1 too)
- *   KNOB2         tempo 60..180      KNOB3  swing 0..50 %
- *   PLAY          start / stop       SAVE   save the pet now
- *   SEL + HOME    a new egg (press HOME again to confirm)
+ * Pick a library (drums, percussion, bass, lead), get one of its three eggs at random, and raise it by learning
+ * that library: every bar it hears, it eats; bars that meet its lesson grow it up. Later, a band of four pets,
+ * one per library, plays together.
  *
- * Every bar the pattern plays, the pet eats it. Each stage has a lesson; bars that meet it make it happy and
- * grow it up. What it ate as a teen decides what it becomes: boom bap, house, breaks or dub.
+ *   HOME           the nest: your pets, a new egg, the band
+ *   nest / menus   OCT- OCT+ (or KNOB1) move, SEL opens
+ *   raising        keys F3..G#4 the 16 steps; PLAY start / stop; KNOB2 tempo; KNOB3 swing; SAVE
+ *     drums        OCT- OCT+ or KNOB1: the lane (kick, snare, hat); keys A4 A#4 B4 play them live
+ *     bass         keys A4..G5 pick a note (held step keys take it); OCT- OCT+ the octave; KNOB1 nudges the note
+ *   band           OCT- OCT+ pick a part, KNOB1 its pet, KNOB2 tempo, PLAY
+ *
  * It lives on powered-on time (the FM-1 has no clock that runs while off): switched off, it sleeps.
  * Integers only, no 64-bit division (docs/RULES.md). */
 #define APP_NAME "TAMISYNTH"
 #define STORE_MAGIC 0x494D4154u                 /* "TAMI" */
-#define CV_MAX (240u * 120u)                    /* the pet's area in one go */
+#define CV_MAX (240u * 120u)
 static void app_idle(void);
 #define LCD_IDLE app_idle
 #include "platform.c"
+typedef struct { uint8_t w, h; const uint8_t *px; const uint16_t *pal[3]; } sprite_t;
 #include "sprites.h"
+#include "sprites_dragon.h"
 
 static void app_idle(void) {}
 
 /* ======================================================================================= the sound (audio ISR) */
 enum { LK, LS, LH, NLANE };
-static volatile uint16_t pat[NLANE];            /* bit i = step i (main loop writes, ISR reads) */
+#define BEATS 0x1111u                           /* steps 1 5 9 13: the four beats */
+#define BACK  0x1010u                           /* steps 5 13: beats 2 and 4 */
+#define OFF8  0x4444u                           /* steps 3 7 11 15: the "and"s */
+
+static volatile uint16_t pl_drum[NLANE];        /* what plays: drum lanes (bit i = step i) ... */
+static volatile uint16_t pl_bgate;              /* ... the bass steps on ... */
+static volatile uint8_t pl_bnote[16];           /* ... and their notes (MIDI) */
+static volatile uint32_t pl_drums, pl_bass, pl_click;   /* which parts sound; a click on the beats */
 static volatile uint32_t bpm = 100, swing = 0;  /* swing 0..128 = 0..50 % of a step */
-static volatile uint32_t playing, step;         /* step: the one sounding now */
-static volatile uint32_t trig_req;              /* bits LK..LH: play now (live keys); bit 3: the pet chirps */
-static volatile uint32_t bar_seq;               /* + 1 at the end of every bar ... */
-static volatile uint16_t bar_pat[NLANE];        /* ... with the pattern that bar played */
-static uint32_t samp_left, played;            /* played: a step has sounded since PLAY */
+static volatile uint32_t playing, step;
+static volatile uint32_t trig_req;              /* bits 0..2 drums now, 3 the chirp, 4 the bass (b_req_note) */
+static volatile uint32_t b_req_note;
+static volatile uint32_t bar_seq;               /* + 1 at the end of every bar, with what that bar played: */
+static volatile uint16_t bar_drum[NLANE], bar_bgate;
+static volatile uint8_t bar_bnote[16];
+static uint32_t samp_left, played;
 
 static int32_t sine(uint32_t ph)                /* a full cycle over 2^32 -> -32767..32767 */
 {
@@ -45,16 +58,23 @@ static uint32_t nz = 0x9E3779B9u;
 static inline int32_t noise(void) { nz ^= nz << 13; nz ^= nz >> 17; nz ^= nz << 5; return (int32_t)nz >> 17; }
 
 #define HZ(f) ((uint32_t)((f) * 97391u))        /* f * 2^32 / 44100, near enough */
-static uint32_t k_ph, k_inc, k_amp, s_ph, s_tamp, s_namp, h_amp, c_ph, c_inc, c_amp;
-static int32_t h_prev;
+static const uint32_t INC_C9[12] = {            /* MIDI 120..131 (C9..B9); lower octaves shift right */
+    815363807u, 863847862u, 915214929u, 969636441u, 1027294024u, 1088380105u,
+    1153098554u, 1221665363u, 1294309365u, 1371273005u, 1452813141u, 1539201906u};
+static uint32_t note_inc(uint32_t m) { return m > 131u ? INC_C9[11] : INC_C9[m % 12u] >> (10u - m / 12u); }
 
-static void trig(uint32_t lane)
+static uint32_t k_ph, k_inc, k_amp, s_ph, s_tamp, s_namp, h_amp, c_ph, c_inc, c_amp;
+static uint32_t b_ph, b_sph, b_inc, b_amp, b_cut, b_held;
+static int32_t h_prev, b_y;
+
+static void trig(uint32_t v)
 {
-    if (lane == LK) { k_ph = 0; k_inc = HZ(165); k_amp = 26000; }
-    else if (lane == LS) { s_ph = 0; s_tamp = 20000; s_namp = 22000; }
-    else if (lane == LH) h_amp = 15000;
+    if (v == LK) { k_ph = 0; k_inc = HZ(165); k_amp = 26000; }
+    else if (v == LS) { s_ph = 0; s_tamp = 20000; s_namp = 22000; }
+    else if (v == LH) h_amp = 15000;
     else { c_ph = 0; c_inc = HZ(900); c_amp = 9000; }
 }
+static void trig_bass(uint32_t note) { b_inc = note_inc(note); b_amp = 24000; b_cut = 2600; b_held = 1; }
 
 static void app_audio(int32_t *out, uint32_t n)
 {
@@ -62,6 +82,7 @@ static void app_audio(int32_t *out, uint32_t n)
     if (r) {
         trig_req = 0;
         for (i = 0; i < 4u; i++) if (r >> i & 1u) trig(i);
+        if (r & 16u) { trig_bass(b_req_note); b_held = 0; }
     }
     for (i = 0; i < n; i++) {
         int32_t s = 0, nn;
@@ -70,12 +91,16 @@ static void app_audio(int32_t *out, uint32_t n)
                 uint32_t base = 661500u / bpm, st, l;   /* samples a 16th: 44100 * 15 / bpm */
                 st = (step + 1u) & 15u;
                 if (st == 0 && played) {
-                    bar_pat[0] = pat[0]; bar_pat[1] = pat[1]; bar_pat[2] = pat[2];
+                    for (l = 0; l < NLANE; l++) bar_drum[l] = pl_drum[l];
+                    bar_bgate = pl_bgate;
+                    for (l = 0; l < 16u; l++) bar_bnote[l] = pl_bnote[l];
                     bar_seq++;
                 }
                 step = st;
                 played = 1;
-                for (l = 0; l < NLANE; l++) if (pat[l] >> st & 1u) trig(l);
+                if (pl_drums) for (l = 0; l < NLANE; l++) if (pl_drum[l] >> st & 1u) trig(l);
+                if (pl_click && (st & 3u) == 0u) h_amp = st ? 5000 : 9000;
+                if (pl_bass) { if (pl_bgate >> st & 1u) trig_bass(pl_bnote[st]); else b_held = 0; }
                 samp_left = st & 1u ? base - (base * swing >> 8) : base + (base * swing >> 8);
             }
             samp_left--;
@@ -98,122 +123,206 @@ static void app_audio(int32_t *out, uint32_t n)
             h_amp -= h_amp >> 9;
         }
         h_prev = nn;
+        if (b_amp > 40u) {                      /* bass: a saw and a sub, through a closing low-pass */
+            int32_t x;
+            b_ph += b_inc;
+            b_sph += b_inc >> 1;
+            x = ((int32_t)b_ph >> 17) + (sine(b_sph) >> 2);
+            b_cut -= (b_cut - 260u) >> 10;
+            b_y += (x - b_y) * (int32_t)b_cut >> 12;
+            s += b_y * (int32_t)b_amp >> 15;
+            b_amp -= b_held ? b_amp >> 15 : b_amp >> 11;
+        }
         if (c_amp > 40u) {                      /* the pet's chirp: a square rising */
             c_ph += c_inc;
             c_inc += c_inc >> 11;
             s += (int32_t)c_ph < 0 ? (int32_t)c_amp : -(int32_t)c_amp;
             c_amp -= c_amp >> 10;
         }
-        s = s * 5 >> 3;                         /* headroom: kick and snare land together on 2 and 4 */
+        s = s * 5 >> 3;                         /* headroom */
         out[2u * i] += s;
         out[2u * i + 1u] += s;
     }
 }
 
-/* ======================================================================================= the pet */
+/* ======================================================================================= the pets */
+enum { LIB_DRUMS, LIB_PERC, LIB_BASS, LIB_LEAD, NLIB };
 enum { ST_EGG, ST_BABY, ST_CHILD, ST_TEEN, ST_ADULT };
-enum { F_BOOMBAP, F_HOUSE, F_BREAKS, F_DUB };
-#define BEATS 0x1111u                           /* steps 1 5 9 13: the four beats */
-#define BACK  0x1010u                           /* steps 5 13: beats 2 and 4 */
-#define OFF8  0x4444u                           /* steps 3 7 11 15: the "and"s */
+#define NPET 8u
+static const char *const LIB_NAME[NLIB] = {"DRUMS", "PERCUSSION", "BASS", "LEAD"};
+static const uint8_t LIB_READY[NLIB] = {1, 0, 1, 0};
+static const char *const EGG_NAME[NLIB][3] = {   /* (the second and third of each: placeholder names) */
+    {"TOMCAT", "KITBASH", "RIMSHOT"}, {"?", "?", "?"},
+    {"DEEP DRAGON", "EMBER DRAGON", "FROST DRAGON"}, {"?", "?", "?"}};
+static const char *const STAGE_WORD[4] = {"egg", "baby", "child", "teen"};
+static const char *const FORM_NAME[NLIB][4] = {
+    {"boom bap", "house", "breaks", "dub"}, {"", "", "", ""}, {"sub", "acid", "disco", "funk"}, {"", "", "", ""}};
+static const char *const LESSON[NLIB][4] = {
+    {"Hatch me: kick every beat", "4 kicks + some hats", "Snare on 2 and 4 (5,13)", "Kick off the beat, or swing"},
+    {"", "", "", ""},
+    {"Hatch me: a note on step 1", "A note on every beat", "Root + its octave or 5th", "Notes on the off-beats"},
+    {"", "", "", ""}};
+static const char *const ADULT_TIP[NLIB][4] = {
+    {"Boom bap: swing it, lay back", "House: 4 kicks, offbeat hats", "Breaks: busy snares, odd kicks", "Dub: less is more"},
+    {"", "", "", ""},
+    {"Sub: few notes, let them ring", "Acid: ten notes or more", "Disco: bounce in octaves", "Funk: walk it, syncopate"},
+    {"", "", "", ""}};
 static const uint32_t NEED[4] = {4, 12, 16, 24};   /* good bars to grow out of each stage */
 
-static struct pet {
-    uint32_t version, stage, form, age_s, hunger, mood, prog, bars;
-    uint32_t diet[4];
-    uint16_t pat[NLANE], pad;
-    uint32_t bpm, swing;
-} pet;
-#define PET_VERSION 1u
+typedef struct {
+    uint8_t used, lib, type, stage, form, bpm, swing, oct;
+    uint16_t hunger, mood;                      /* 0..100 */
+    uint32_t age_s, prog, bars;
+    uint16_t diet[4];
+    uint16_t lane[NLANE];                       /* drums: the three lanes */
+    uint16_t gate;                              /* bass: the steps on ... */
+    uint8_t note[16];                           /* ... and their notes */
+} pet_t;
+static struct save {
+    uint32_t version;
+    uint8_t cur, band_bpm, pad[2];
+    uint8_t band[NLIB];                         /* the band: pet index + 1 per part, 0 = none */
+    pet_t pet[NPET];
+} sv;
+#define SAVE_VERSION 2u
+static pet_t *P;                                /* the pet being raised */
 
 static uint32_t pc16(uint32_t v) { uint32_t c = 0; v &= 0xFFFFu; while (v) { v &= v - 1u; c++; } return c; }
 
-static uint32_t classify(const uint16_t *b)     /* what kind of bar this was */
+static uint32_t drum_form(const uint16_t *b)
 {
     uint32_t hits = pc16(b[LK]) + pc16(b[LS]) + pc16(b[LH]);
-    if (hits <= 6u) return F_DUB;
-    if ((b[LK] & BEATS) == BEATS && pc16(b[LH] & OFF8) >= 2u) return F_HOUSE;
-    if (pc16(b[LS]) >= 4u || pc16(b[LK] & ~BEATS) >= 2u) return F_BREAKS;
-    return F_BOOMBAP;
+    if (hits <= 6u) return 3;                                           /* dub */
+    if ((b[LK] & BEATS) == BEATS && pc16(b[LH] & OFF8) >= 2u) return 1; /* house */
+    if (pc16(b[LS]) >= 4u || pc16(b[LK] & ~BEATS) >= 2u) return 2;      /* breaks */
+    return 0;                                                           /* boom bap */
 }
-
-static int lesson_ok(const uint16_t *b)
+static int drum_ok(const pet_t *p, const uint16_t *b)
 {
-    switch (pet.stage) {
+    switch (p->stage) {
     case ST_EGG:   return (b[LK] & BEATS) == BEATS;
     case ST_BABY:  return (b[LK] & BEATS) == BEATS && pc16(b[LH]) >= 2u;
     case ST_CHILD: return (b[LS] & BACK) == BACK && (b[LK] & 1u) && pc16(b[LH]) >= 4u;
-    case ST_TEEN:  return (b[LS] & BACK) == BACK && ((b[LK] & ~BEATS & 0xFFFFu) || pet.swing >= 32u);
-    default:       return classify(b) == pet.form;
+    case ST_TEEN:  return (b[LS] & BACK) == BACK && ((b[LK] & ~BEATS & 0xFFFFu) || p->swing >= 32u);
+    default:       return drum_form(b) == p->form;
     }
 }
 
-static const char *const LESSON[5] = {
-    "Hatch me: kick every beat", "4 kicks + some hats", "Snare on 2 and 4 (5,13)",
-    "Kick off the beat, or swing", ""};
-static const char *const ADULT_TIP[4] = {
-    "Boom bap: swing it, lay back", "House: 4 kicks, offbeat hats", "Breaks: busy snares, odd kicks",
-    "Dub: less is more"};
-static const char *const FORM_NAME[4] = {"CRATE", "FOURFLOOR", "CHOPPER", "ECHO"};
-static const char *const STAGE_NAME[4] = {"EGG", "BLIP", "KIK", "HATLING"};
+typedef struct { uint32_t n, distinct, related, octj; } bassinfo_t;
+static bassinfo_t bass_look(uint32_t gate, const uint8_t *note)
+{
+    bassinfo_t r = {0, 0, 0, 0};
+    uint32_t i, j, prev = 0, have = 0;
+    for (i = 0; i < 16u; i++) {
+        if (!(gate >> i & 1u)) continue;
+        r.n++;
+        for (j = 0; j < i; j++) if ((gate >> j & 1u) && note[j] == note[i]) break;
+        if (j == i) r.distinct++;
+        for (j = 0; j < i; j++)
+            if (gate >> j & 1u) {
+                uint32_t d = note[i] > note[j] ? note[i] - note[j] : note[j] - note[i];
+                if (d == 7u || d == 12u || d == 5u) r.related = 1;
+            }
+        if (have && (note[i] == prev + 12u || prev == note[i] + 12u)) r.octj++;
+        prev = note[i]; have = 1;
+    }
+    return r;
+}
+static uint32_t bass_form(const bassinfo_t *b)
+{
+    if (b->n <= 4u) return 0;                   /* sub */
+    if (b->n >= 10u) return 1;                  /* acid */
+    if (b->octj >= 3u) return 2;                /* disco */
+    return 3;                                   /* funk */
+}
+static int bass_ok(const pet_t *p, uint32_t gate, const bassinfo_t *b)
+{
+    switch (p->stage) {
+    case ST_EGG:   return gate & 1u;
+    case ST_BABY:  return (gate & BEATS) == BEATS;
+    case ST_CHILD: return b->distinct >= 2u && b->related;
+    case ST_TEEN:  return (gate & OFF8) != 0u && b->distinct >= 2u;
+    default:       return bass_form(b) == p->form;
+    }
+}
 
-static char say[32];                            /* the pet's latest line */
-static uint32_t say_until, dirty, need_full;
-
+static char say[32];
+static uint32_t say_until, redraw, dirty, happy_until;
 static void put(char *d, const char *s) { while ((*d++ = *s++) != 0) {} }
-static void say_it(const char *s, uint32_t ms) { put(say, s); say_until = fm1_ms + ms; need_full |= 2u; }
+static void say_it(const char *s, uint32_t ms) { put(say, s); say_until = fm1_ms + ms; redraw |= 2u; }
 
-static void new_egg(void)
+static uint32_t rng_x;
+#ifdef DINGHY_HOST
+#define fm1_ticks() (fm1_ms * 24000u)
+#endif
+static uint32_t rnd(void) { rng_x ^= fm1_ticks(); rng_x ^= rng_x << 13; rng_x ^= rng_x >> 17; rng_x ^= rng_x << 5; return rng_x; }
+
+static int new_pet(uint32_t lib)
 {
-    memset(&pet, 0, sizeof pet);
-    pet.version = PET_VERSION;
-    pet.mood = 50;
-    pet.bpm = 100;
-    pet.pat[LK] = 0x0001u;                       /* one kick to start from */
-    dirty = 1;
+    uint32_t i;
+    for (i = 0; i < NPET; i++) if (!sv.pet[i].used) break;
+    if (i == NPET) return -1;
+    memset(&sv.pet[i], 0, sizeof sv.pet[i]);
+    sv.pet[i].used = 1;
+    sv.pet[i].lib = (uint8_t)lib;
+    sv.pet[i].type = (uint8_t)(rnd() % 3u);
+    sv.pet[i].mood = 50;
+    sv.pet[i].bpm = 100;
+    if (lib == LIB_DRUMS) sv.pet[i].lane[LK] = 0x0001u;
+    for (uint32_t s = 0; s < 16u; s++) sv.pet[i].note[s] = 36;   /* C2 */
+    return (int)i;
 }
 
-static void eat_bar(const uint16_t *b)
+static void eat_bar(void)
 {
-    uint32_t hits = pc16(b[LK]) + pc16(b[LS]) + pc16(b[LH]), ok = lesson_ok(b);
-    pet.bars++;
-    if (pet.stage != ST_EGG && hits >= 3u) {     /* food */
-        pet.hunger = pet.hunger > 3u ? pet.hunger - 3u : 0u;
-        if (ok) pet.hunger = pet.hunger ? pet.hunger - 1u : 0u;
+    uint16_t d[NLANE];
+    uint8_t bn[16];
+    uint32_t i, hits, ok, f = 0, gate = bar_bgate;
+    bassinfo_t bi = {0, 0, 0, 0};
+    for (i = 0; i < NLANE; i++) d[i] = bar_drum[i];
+    for (i = 0; i < 16u; i++) bn[i] = bar_bnote[i];
+    if (P->lib == LIB_DRUMS) { hits = pc16(d[LK]) + pc16(d[LS]) + pc16(d[LH]); ok = drum_ok(P, d); f = drum_form(d); }
+    else { bi = bass_look(gate, bn); hits = bi.n; ok = bass_ok(P, gate, &bi); f = bass_form(&bi); }
+    P->bars++;
+    if (P->stage != ST_EGG && hits >= 3u) {
+        P->hunger = P->hunger > 3u ? (uint16_t)(P->hunger - 3u) : 0u;
+        if (ok && P->hunger) P->hunger--;
     }
-    if (pet.stage == ST_TEEN && hits >= 4u) pet.diet[classify(b)]++;
+    if (P->stage == ST_TEEN && hits >= 3u && P->diet[f] < 60000u) P->diet[f]++;
     if (ok) {
-        pet.mood = pet.mood + 4u > 100u ? 100u : pet.mood + 4u;
-        if (pet.stage < ST_ADULT) pet.prog++;
+        P->mood = P->mood + 4u > 100u ? 100u : (uint16_t)(P->mood + 4u);
+        if (P->stage < ST_ADULT) P->prog++;
         trig_req |= 8u;
-        say_it(pet.stage == ST_EGG ? "*tap tap* (it moved!)" : "Yum! That's the one", 1800);
+        happy_until = fm1_ms + 1500u;
+        say_it(P->stage == ST_EGG ? "*tap tap* (it moved!)" : "Yum! That's the one", 1800);
     } else {
-        if (pet.mood) pet.mood--;
-        if (hits < 3u && pet.stage != ST_EGG) say_it("...is that all?", 1800);
+        if (P->mood) P->mood--;
+        if (hits < 3u && P->stage != ST_EGG) say_it("...is that all?", 1800);
     }
-    if (pet.stage < ST_ADULT && pet.prog >= NEED[pet.stage]) {   /* grow */
-        pet.stage++;
-        pet.prog = 0;
-        if (pet.stage == ST_ADULT) {
-            uint32_t f, best = 0;
-            for (f = 1; f < 4u; f++) if (pet.diet[f] > pet.diet[best]) best = f;
-            pet.form = best;
+    if (P->stage < ST_ADULT && P->prog >= NEED[P->stage]) {
+        P->stage++;
+        P->prog = 0;
+        if (P->stage == ST_ADULT) {
+            uint32_t best = 0;
+            for (i = 1; i < 4u; i++) if (P->diet[i] > P->diet[best]) best = i;
+            P->form = (uint8_t)best;
         }
-        say_it(pet.stage == ST_BABY ? "It hatched!" : "It grew!", 4000);
-        need_full = 15u;
-        dirty |= 2u;                            /* save now, even while playing */
+        say_it(P->stage == ST_BABY ? "It hatched!" : "It grew!", 4000);
+        redraw = 0xFFu;
+        dirty |= 2u;
     }
     dirty |= 1u;
 }
 
-static void tick_second(void)                   /* life goes on while it is switched on */
+static void tick_second(void)
 {
-    pet.age_s++;
-    if (pet.stage != ST_EGG && pet.age_s % 15u == 0u) {
-        if (pet.hunger < 100u) pet.hunger++;
-        if (pet.hunger > 70u && pet.mood) pet.mood--;
-        if (pet.hunger == 80u) say_it("I'm hungry. Play me a beat", 3000);
+    P->age_s++;
+    if (P->stage != ST_EGG && P->age_s % 15u == 0u) {
+        if (P->hunger < 100u) P->hunger++;
+        if (P->hunger > 70u && P->mood) P->mood--;
+        if (P->hunger == 80u) say_it("I'm hungry. Play for me", 3000);
         dirty |= 1u;
+        redraw |= 1u;
     }
 }
 
@@ -221,18 +330,13 @@ static void tick_second(void)                   /* life goes on while it is swit
 #define C_BG    RGB(28, 31, 43)
 #define C_TXT   RGB(230, 230, 236)
 #define C_MUTE  RGB(130, 134, 150)
+#define C_SLOT  RGB(45, 50, 68)
 #define C_TEAL  RGB(79, 195, 181)
 #define C_HOT   RGB(255, 107, 107)
 #define C_GOLD  RGB(242, 193, 78)
 static const uint16_t LANE_COL[NLANE] = {RGB(255, 140, 90), RGB(242, 193, 78), RGB(127, 209, 198)};
-static uint32_t lane;
-
-static const sprite_t *pet_sprite(void)
-{
-    static const uint8_t KID[4] = {SP_EGG, SP_BLIP, SP_KIK, SP_HATLING};
-    static const uint8_t ADULT[4] = {SP_CRATE, SP_FOURFLOOR, SP_CHOPPER, SP_ECHO};
-    return &SPRITES[pet.stage < ST_ADULT ? KID[pet.stage] : ADULT[pet.form & 3u]];
-}
+enum { M_RAISE, M_NEST, M_PICK, M_HATCH, M_BAND };
+static uint32_t mode = M_NEST, cursor, lane, cur_note = 36, stop_ms, anim, t_sec;
 
 static char *put_u(char *p, uint32_t v)
 {
@@ -245,175 +349,411 @@ static char *put_u(char *p, uint32_t v)
 }
 static char *cat(char *p, const char *s) { while (*s) *p++ = *s++; *p = 0; return p; }
 
-static void bar(int32_t x, int32_t y, int32_t w, uint32_t v, uint16_t c)   /* v 0..100 */
+static const sprite_t *pet_sprite(const pet_t *p, int dancing)
 {
-    cv_rect(x, y, w, 6, RGB(55, 60, 78));
+    static const uint8_t KID[4] = {SP_EGG, SP_BLIP, SP_KIK, SP_HATLING};
+    static const uint8_t ADULT[4] = {SP_CRATE, SP_FOURFLOOR, SP_CHOPPER, SP_ECHO};
+    if (p->stage == ST_EGG) return &SPRITES[SP_EGG];
+    if (p->lib == LIB_DRUMS) return &SPRITES[p->stage < ST_ADULT ? KID[p->stage] : ADULT[p->form & 3u]];
+    if (fm1_ms < happy_until) return &DRAGON[DG_HAPPY0 + (anim & 1u)];
+    if (dancing) return &DRAGON[DG_DANCE0 + anim % 3u];
+    if (mode == M_RAISE && !playing && fm1_ms - stop_ms > 60000u) return &DRAGON[DG_SLEEP];
+    {
+        static const uint8_t IDLE[8] = {DG_IDLE0, DG_IDLE1, DG_IDLE0, DG_IDLE2, DG_IDLE0, DG_BLINK, DG_IDLE1, DG_IDLE0};
+        return &DRAGON[IDLE[anim & 7u]];
+    }
+}
+static void blit_sprite(const sprite_t *sp, uint32_t variant, int32_t ox, int32_t oy, int32_t sc)
+{
+    const uint16_t *pal = sp->pal[variant % 3u];
+    uint32_t x, y;
+    for (y = 0; y < sp->h; y++)
+        for (x = 0; x < sp->w; x++) {
+            uint8_t i = sp->px[y * sp->w + x];
+            if (i) cv_rect(ox + (int32_t)x * sc, oy + (int32_t)y * sc, sc, sc, pal[i]);
+        }
+}
+static void name_of(char *b, const pet_t *p)
+{
+    char *q = cat(b, EGG_NAME[p->lib][p->type % 3u]);
+    q = cat(q, "  ");
+    cat(q, p->stage < ST_ADULT ? STAGE_WORD[p->stage] : FORM_NAME[p->lib][p->form & 3u]);
+}
+static void meter(int32_t x, int32_t y, int32_t w, uint32_t v, uint16_t c)
+{
+    cv_rect(x, y, w, 6, C_SLOT);
     cv_rect(x, y, (int32_t)((uint32_t)w * v / 100u), 6, c);
 }
 
-static void draw_top(void)                      /* 0..40: name, age, hunger, mood */
+static void draw_top(void)                      /* 0..40 */
 {
-    char b[40], *p;
+    char b[48], *p;
     cv_begin(240, 40, C_BG);
-    cat(b, pet.stage < ST_ADULT ? STAGE_NAME[pet.stage] : FORM_NAME[pet.form & 3u]);
-    cv_text(6, 2, &FONT_S, b, C_TXT);
-    p = put_u(b, pet.age_s / 60u); p = cat(p, "m ");
-    p = put_u(p, pet.bpm); p = cat(p, "bpm sw"); p = put_u(p, pet.swing * 100u / 256u); cat(p, "%");
-    cv_text(234 - text_w(&FONT_S, b), 2, &FONT_S, b, C_MUTE);
-    if (pet.stage != ST_EGG) {
+    {
+        char n[40];
+        int32_t wn;
+        name_of(n, P);
+        wn = cv_text(6, 2, &FONT_S, n, C_TXT);
+        p = put_u(b, bpm); p = cat(p, "bpm");
+        if (text_w(&FONT_S, b) + wn + 90 < 234) { p = cat(p, " sw"); p = put_u(p, swing * 100u / 256u); cat(p, "%"); }
+        if (text_w(&FONT_S, b) + wn + 8 < 234) cv_text(234 - text_w(&FONT_S, b), 2, &FONT_S, b, C_MUTE);
+    }
+    if (P->stage != ST_EGG) {
         cv_text(6, 21, &FONT_S, "FED", C_MUTE);
-        bar(38, 27, 74, 100u - pet.hunger, pet.hunger > 70u ? C_HOT : C_TEAL);
+        meter(38, 27, 74, 100u - P->hunger, P->hunger > 70u ? C_HOT : C_TEAL);
         cv_text(124, 21, &FONT_S, "JOY", C_MUTE);
-        bar(158, 27, 74, pet.mood, pet.mood < 30u ? C_HOT : C_GOLD);
+        meter(158, 27, 74, P->mood, P->mood < 30u ? C_HOT : C_GOLD);
     } else {
-        cv_text(6, 21, &FONT_S, "warm it with a pulse", C_MUTE);
+        cv_text(6, 21, &FONT_S, LIB_NAME[P->lib], C_MUTE);
     }
     cv_blit(0, 0);
 }
-
-static void draw_pet(int bob)                   /* 40..160: the pet, 3x */
+static void draw_pet(int bob)                   /* 40..160 */
 {
-    const sprite_t *sp = pet_sprite();
-    uint32_t x, y;
-    int32_t ox = 60, oy = 0 - (bob ? 3 : 0);
+    const sprite_t *sp = pet_sprite(P, playing);
+    int32_t sc = sp->w > 40u ? 2 : 3, w = (int32_t)sp->w * sc, h = (int32_t)sp->h * sc;
     cv_begin(240, 120, C_BG);
-    cv_rect(40, 112, 160, 3, RGB(45, 50, 68));   /* the floor */
-    for (y = 0; y < SPR_N; y++)
-        for (x = 0; x < SPR_N; x++) {
-            uint8_t i = sp->px[y * SPR_N + x];
-            if (i) cv_rect(ox + (int32_t)x * 3, oy + (int32_t)y * 3, 3, 3, sp->pal[i]);
-        }
-    if (!playing) cv_text(184, 10, &FONT_S, "z z", C_MUTE);
+    cv_rect(40, 116, 160, 3, C_SLOT);
+    blit_sprite(sp, P->type, (240 - w) / 2, 118 - h - (bob && sc == 3 ? 3 : 0), sc);
+    if (!playing && sp != &DRAGON[DG_SLEEP]) cv_text(186, 8, &FONT_S, "z z", C_MUTE);
     cv_blit(0, 40);
 }
-
-static void draw_words(void)                    /* 160..192: the lesson (or the pet's line) and the progress */
+static void draw_words(void)                    /* 160..192 */
 {
     cv_begin(240, 32, C_BG);
     if (fm1_ms < say_until) cv_text(6, 0, &FONT_S, say, C_GOLD);
-    else cv_text(6, 0, &FONT_S, pet.stage < ST_ADULT ? LESSON[pet.stage] : ADULT_TIP[pet.form & 3u], C_TXT);
-    if (pet.stage < ST_ADULT) {
-        cv_rect(6, 22, 228, 4, RGB(55, 60, 78));
-        cv_rect(6, 22, (int32_t)(228u * pet.prog / NEED[pet.stage]), 4, C_TEAL);
+    else cv_text(6, 0, &FONT_S, P->stage < ST_ADULT ? LESSON[P->lib][P->stage] : ADULT_TIP[P->lib][P->form & 3u], C_TXT);
+    if (P->stage < ST_ADULT) {
+        cv_rect(6, 22, 228, 4, C_SLOT);
+        cv_rect(6, 22, (int32_t)(228u * P->prog / NEED[P->stage]), 4, C_TEAL);
     }
     cv_blit(0, 160);
 }
-
-static void draw_grid(void)                     /* 192..240: the three lanes, 16 steps */
+static void draw_grid(void)                     /* 192..240 */
 {
     uint32_t l, s;
     cv_begin(240, 48, C_BG);
-    for (l = 0; l < NLANE; l++) {
-        int32_t y = 2 + (int32_t)l * 15;
-        cv_rect(4, y, 24, 12, l == lane ? LANE_COL[l] : RGB(45, 50, 68));
-        cv_text(8, y - 3, &FONT_S, l == 0 ? "K" : l == 1 ? "S" : "H", l == lane ? C_BG : C_MUTE);
+    if (P->lib == LIB_DRUMS) {
+        for (l = 0; l < NLANE; l++) {
+            int32_t y = 2 + (int32_t)l * 15;
+            cv_rect(4, y, 24, 12, l == lane ? LANE_COL[l] : C_SLOT);
+            cv_text(8, y - 3, &FONT_S, l == 0 ? "K" : l == 1 ? "S" : "H", l == lane ? C_BG : C_MUTE);
+            for (s = 0; s < 16u; s++) {
+                int32_t x = 32 + (int32_t)s * 13 + (int32_t)(s / 4u);
+                uint16_t c = P->lane[l] >> s & 1u ? LANE_COL[l] : (s % 4u == 0 ? RGB(62, 68, 90) : C_SLOT);
+                if (playing && s == step) c = P->lane[l] >> s & 1u ? C_WHITE : RGB(90, 96, 120);
+                cv_rect(x, y, 11, 12, c);
+            }
+        }
+    } else {                                    /* bass: a column per step, the note as height */
+        char b[8];
+        static const char *const NN[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+        put_u(cat(b, NN[cur_note % 12u]), cur_note / 12u - 1u);
+        cv_rect(4, 2, 24, 42, RGB(166, 216, 74));
+        cv_text(6, 14, &FONT_S, b, C_BG);
         for (s = 0; s < 16u; s++) {
-            int32_t x = 32 + (int32_t)s * 13 + (int32_t)(s / 4u) * 1;
-            uint16_t c = pat[l] >> s & 1u ? LANE_COL[l] : (s % 4u == 0 ? RGB(62, 68, 90) : RGB(45, 50, 68));
-            if (playing && s == step) c = pat[l] >> s & 1u ? C_WHITE : RGB(90, 96, 120);
-            cv_rect(x, y, 11, 12, c);
+            int32_t x = 32 + (int32_t)s * 13 + (int32_t)(s / 4u);
+            cv_rect(x, 2, 11, 42, s % 4u == 0 ? RGB(40, 45, 62) : RGB(34, 38, 52));
+            if (P->gate >> s & 1u) {
+                int32_t hgt = 6 + ((int32_t)P->note[s] - 24);
+                if (hgt > 42) hgt = 42;
+                if (hgt < 4) hgt = 4;
+                cv_rect(x, 44 - hgt, 11, hgt, playing && s == step ? C_WHITE : RGB(166, 216, 74));
+            } else if (playing && s == step) cv_rect(x, 40, 11, 4, RGB(90, 96, 120));
         }
     }
     cv_blit(0, 192);
 }
 
-/* ======================================================================================= main */
-static void save_now(void)
+static void draw_list(const char *title, const char *const *rows, const uint8_t *dim, uint32_t n, const char *hint)
 {
-    pet.pat[LK] = pat[LK]; pet.pat[LS] = pat[LS]; pet.pat[LH] = pat[LH];
-    pet.bpm = bpm; pet.swing = swing;
-    settings_save(&pet, sizeof pet);
-    dirty = 0;
+    uint32_t i;
+    lcd_fill(0, 0, 240, 240, C_BG);
+    draw_text_box(0, 8, 240, &FONT_L, title, C_GOLD, 1);
+    for (i = 0; i < n; i++) {
+        uint16_t c = dim && dim[i] ? C_MUTE : C_TXT;
+        if (i == cursor) lcd_fill(4, 44 + i * 17, 232, 17, C_SLOT);
+        draw_text_box(10, 44 + i * 17, 220, &FONT_S, rows[i], i == cursor ? C_WHITE : c, 0);
+        if (i == cursor) lcd_fill(4, 44 + i * 17, 3, 17, C_GOLD);
+    }
+    draw_text_box(0, 222, 240, &FONT_S, hint, C_MUTE, 1);
+}
+
+static char rowbuf[10][32];
+static const char *rowp[10];
+static uint8_t rowdim[10], rowpet[10];
+static uint32_t nrows;
+
+static void build_nest(void)
+{
+    uint32_t i, hasfree = 0;
+    nrows = 0;
+    for (i = 0; i < NPET; i++) {
+        if (!sv.pet[i].used) { hasfree = 1; continue; }
+        name_of(rowbuf[nrows], &sv.pet[i]);
+        rowdim[nrows] = 0; rowpet[nrows] = (uint8_t)i; nrows++;
+    }
+    if (hasfree) { put(rowbuf[nrows], "+ new egg"); rowdim[nrows] = 0; rowpet[nrows] = 0xFE; nrows++; }
+    put(rowbuf[nrows], "band"); rowdim[nrows] = 0; rowpet[nrows] = 0xFD; nrows++;
+    for (i = 0; i < nrows; i++) rowp[i] = rowbuf[i];
+    if (cursor >= nrows) cursor = nrows - 1u;
+}
+static void draw_nest(void) { build_nest(); draw_list("NEST", rowp, rowdim, nrows, "OCT move   SEL open"); }
+
+static void draw_pick(void)
+{
+    uint32_t i;
+    for (i = 0; i < NLIB; i++) {
+        char *q = cat(rowbuf[i], LIB_NAME[i]);
+        if (!LIB_READY[i]) cat(q, "  (soon)");
+        rowp[i] = rowbuf[i]; rowdim[i] = (uint8_t)!LIB_READY[i];
+    }
+    draw_list("PICK A LIBRARY", rowp, rowdim, NLIB, "SEL: get an egg   HOME back");
+}
+
+static void draw_hatch(void)
+{
+    char b[40];
+    lcd_fill(0, 0, 240, 240, C_BG);
+    draw_text_box(0, 10, 240, &FONT_S, "You got", C_MUTE, 1);
+    draw_text_box(0, 28, 240, &FONT_L, EGG_NAME[P->lib][P->type % 3u], C_GOLD, 1);
+    cv_begin(240, 120, C_BG);
+    blit_sprite(&SPRITES[SP_EGG], P->type, 60, 0, 3);
+    cv_blit(0, 70);
+    cat(cat(b, LIB_NAME[P->lib]), " egg");
+    draw_text_box(0, 196, 240, &FONT_S, b, C_TXT, 1);
+    draw_text_box(0, 220, 240, &FONT_S, "SEL: start raising it", C_MUTE, 1);
+}
+
+static void draw_band(int bob)
+{
+    uint32_t l;
+    char b[40];
+    cv_begin(240, 120, C_BG);
+    for (l = 0; l < NLIB; l++) {
+        int32_t cx = 30 + (int32_t)l * 60;
+        cv_rect(cx - 28, 0, 56, 120, l == cursor ? C_SLOT : C_BG);
+        if (sv.band[l]) {
+            const pet_t *p = &sv.pet[sv.band[l] - 1u];
+            const sprite_t *sp = pet_sprite(p, playing);
+            blit_sprite(sp, p->type, cx - (int32_t)sp->w / 2, 100 - (int32_t)sp->h - (bob && playing ? 2 : 0), 1);
+        }
+        cv_text(cx - text_w(&FONT_S, l == 0 ? "DRM" : l == 1 ? "PRC" : l == 2 ? "BAS" : "LEAD") / 2, 102, &FONT_S,
+                l == 0 ? "DRM" : l == 1 ? "PRC" : l == 2 ? "BAS" : "LEAD", LIB_READY[l] ? C_TXT : C_MUTE);
+    }
+    cv_blit(0, 40);
+    cv_begin(240, 40, C_BG);
+    cv_text(6, 2, &FONT_S, "BAND", C_GOLD);
+    cat(put_u(b, bpm), " bpm");
+    cv_text(234 - text_w(&FONT_S, b), 2, &FONT_S, b, C_MUTE);
+    cv_blit(0, 0);
+    cv_begin(240, 80, C_BG);
+    if (sv.band[cursor]) name_of(b, &sv.pet[sv.band[cursor] - 1u]);
+    else put(b, LIB_READY[cursor] ? "(empty: KNOB1 picks)" : "(this library: soon)");
+    cv_text(6, 4, &FONT_S, b, C_TXT);
+    cv_text(6, 56, &FONT_S, "OCT part  KNOB1 pet  PLAY", C_MUTE);
+    cv_blit(0, 160);
+}
+
+/* ======================================================================================= main */
+static void save_now(void) { settings_save(&sv, sizeof sv); dirty = 0; }
+
+static void load_play_raise(void)               /* the pet being raised is what plays */
+{
+    uint32_t i;
+    pl_drums = P->lib == LIB_DRUMS; pl_bass = P->lib == LIB_BASS; pl_click = P->lib != LIB_DRUMS;
+    for (i = 0; i < NLANE; i++) pl_drum[i] = P->lane[i];
+    pl_bgate = P->gate;
+    for (i = 0; i < 16u; i++) pl_bnote[i] = P->note[i];
+    bpm = P->bpm >= 60u && P->bpm <= 180u ? P->bpm : 100u;
+    swing = P->swing <= 128u ? P->swing : 0u;
+}
+static void load_play_band(void)
+{
+    uint32_t i;
+    pl_drums = 0; pl_bass = 0; pl_click = 0;
+    if (sv.band[LIB_DRUMS]) { const pet_t *p = &sv.pet[sv.band[LIB_DRUMS] - 1u]; for (i = 0; i < NLANE; i++) pl_drum[i] = p->lane[i]; pl_drums = 1; }
+    if (sv.band[LIB_BASS]) { const pet_t *p = &sv.pet[sv.band[LIB_BASS] - 1u]; pl_bgate = p->gate; for (i = 0; i < 16u; i++) pl_bnote[i] = p->note[i]; pl_bass = 1; }
+    bpm = sv.band_bpm >= 60u && sv.band_bpm <= 180u ? sv.band_bpm : 100u;
+    swing = 0;
+}
+static void go(uint32_t m)
+{
+    if (playing) { playing = 0; b_held = 0; }
+    if (dirty) save_now();
+    mode = m;
+    cursor = 0;
+    if (m == M_RAISE) load_play_raise();
+    if (m == M_BAND) load_play_band();
+    stop_ms = t_sec = fm1_ms;
+    redraw = 0xFFu;
+    for (uint32_t l = 0; l < 27u; l++) fm1_led_key(KEY_LED(l), 0);
+    fm1_led_key(BTN_PLAY, 0);
+}
+
+static void band_cycle(uint32_t part, int32_t dir)   /* the next pet of this library for this part, or none */
+{
+    int32_t i = sv.band[part] ? (int32_t)sv.band[part] - 1 : -1, k;
+    for (k = 0; k <= (int32_t)NPET; k++) {
+        i += dir;
+        if (i < -1) i = (int32_t)NPET - 1;
+        if (i >= (int32_t)NPET) i = -1;
+        if (i == -1 || (sv.pet[i].used && sv.pet[i].lib == part && sv.pet[i].stage > ST_EGG)) break;
+    }
+    sv.band[part] = (uint8_t)(i + 1);
+    dirty |= 1u;
+    load_play_band();
 }
 
 static void app_main(void)
 {
-    uint32_t last_step = 99, last_seq, t_sec = fm1_ms, t_save = fm1_ms, confirm_new = 0, prev_keys = 0, l;
+    uint32_t last_step = 99, last_seq, t_save = fm1_ms, t_anim = fm1_ms, prev_keys = 0, l;
     int bob = 0;
 
-    if (settings_load(&pet, sizeof pet) || pet.version != PET_VERSION) new_egg();
-    pat[LK] = pet.pat[LK]; pat[LS] = pet.pat[LS]; pat[LH] = pet.pat[LH];
-    bpm = pet.bpm >= 60u && pet.bpm <= 180u ? pet.bpm : 100u;
-    swing = pet.swing <= 128u ? pet.swing : 0u;
+    rng_x = 0x2545F491u ^ fm1_ticks();
+    if (settings_load(&sv, sizeof sv) || sv.version != SAVE_VERSION) { memset(&sv, 0, sizeof sv); sv.version = SAVE_VERSION; sv.band_bpm = 100; }
+    if (sv.cur < NPET && sv.pet[sv.cur].used) { P = &sv.pet[sv.cur]; go(M_RAISE); say_it("*yawn* ...hi!", 2500); }
+    else { P = &sv.pet[0]; go(M_NEST); }
     last_seq = bar_seq;
-    lcd_fill(0, 0, 240, 240, C_BG);
-    say_it(pet.stage == ST_EGG ? "An egg. It's warm." : "*yawn* ...hi!", 2500);
-    need_full = 15u;
 
     for (;;) {
         uint32_t rel, b, keys, down;
-        int32_t e;
+        int32_t e, e2, mv = 0;
         platform_poll();
-
-        /* ---- the panel */
         b = fm1_input_edges(&rel);
-        if (b & (1u << BTN_PLAY)) {
-            if (playing) { playing = 0; save_now(); }
-            else { step = 15; samp_left = 0; played = 0; last_seq = bar_seq; playing = 1; }
-            need_full |= 1u;
-        }
-        if (b & (1u << BTN_OCT_DOWN)) { lane = (lane + NLANE - 1u) % NLANE; need_full |= 4u; }
-        if (b & (1u << BTN_OCT_UP)) { lane = (lane + 1u) % NLANE; need_full |= 4u; }
-        if (b & (1u << BTN_SAVE)) { save_now(); say_it("Saved.", 1200); }
-        if (b & (1u << BTN_HOME)) {
-            if (confirm_new && fm1_ms - confirm_new < 4000u) {
-                playing = 0; new_egg();
-                pat[LK] = pet.pat[LK]; pat[LS] = 0; pat[LH] = 0; bpm = 100; swing = 0;
-                save_now(); confirm_new = 0;
-                say_it("A new egg.", 2500); need_full = 15u;
-            } else if (fm1_in.buttons & (1u << BTN_SEL)) {
-                confirm_new = fm1_ms;
-                say_it("HOME again: new egg", 4000);
-            }
-        }
-        if ((e = fm1_enc_take(ENC_KNOB1)) != 0) { lane = (uint32_t)((int32_t)lane + (e > 0 ? 1 : -1) + NLANE) % NLANE; need_full |= 4u; }
-        if ((e = fm1_enc_take(ENC_KNOB2)) != 0) {
-            int32_t v = (int32_t)bpm + e;
-            bpm = (uint32_t)(v < 60 ? 60 : v > 180 ? 180 : v); pet.bpm = bpm; need_full |= 1u; dirty |= 1u;
-        }
-        if ((e = fm1_enc_take(ENC_KNOB3)) != 0) {
-            int32_t v = (int32_t)swing + e * 4;
-            swing = (uint32_t)(v < 0 ? 0 : v > 128 ? 128 : v); pet.swing = swing; need_full |= 1u; dirty |= 1u;
-        }
         keys = fm1_in.notes;
         down = (keys & ~prev_keys) | fm1_input_note_edges();
         prev_keys = keys;
-        if (down & 0xFFFFu) {                   /* steps */
-            pat[lane] ^= (uint16_t)(down & 0xFFFFu);
-            pet.pat[lane] = pat[lane];
-            if (!playing) trig_req |= 1u << lane;
-            need_full |= 4u; dirty |= 1u;
-        }
-        if (down & (7u << 16)) trig_req |= (down >> 16) & 7u;   /* live pads */
+        if (b & (1u << BTN_OCT_DOWN)) mv = -1;
+        if (b & (1u << BTN_OCT_UP)) mv = 1;
+        e = fm1_enc_take(ENC_KNOB1);
 
-        /* ---- life */
-        if (bar_seq != last_seq) {
-            uint16_t bp[NLANE];
-            last_seq = bar_seq;
-            bp[0] = bar_pat[0]; bp[1] = bar_pat[1]; bp[2] = bar_pat[2];
-            eat_bar(bp);
-            need_full |= 3u;
+        if (b & (1u << BTN_HOME) && mode != M_NEST) { go(M_NEST); continue; }
+
+        if (mode == M_NEST || mode == M_PICK) {
+            uint32_t n = mode == M_NEST ? (build_nest(), nrows) : NLIB;
+            if (e) mv = e > 0 ? 1 : -1;
+            if (mv) { cursor = (cursor + n + (uint32_t)mv) % n; redraw |= 1u; }
+            if (b & (1u << BTN_SEL)) {
+                if (mode == M_NEST) {
+                    uint8_t t = rowpet[cursor];
+                    if (t == 0xFE) go(M_PICK);
+                    else if (t == 0xFD) go(M_BAND);
+                    else { sv.cur = t; P = &sv.pet[t]; dirty |= 1u; go(M_RAISE); }
+                } else if (LIB_READY[cursor]) {
+                    int k = new_pet(cursor);
+                    if (k >= 0) { sv.cur = (uint8_t)k; P = &sv.pet[k]; dirty |= 1u; go(M_HATCH); }
+                }
+                if (mode != M_NEST && mode != M_PICK) continue;   /* the new screen draws itself */
+            }
+            if (redraw) { if (mode == M_NEST) draw_nest(); else draw_pick(); redraw = 0; }
+            continue;
         }
-        while (fm1_ms - t_sec >= 1000u) { t_sec += 1000u; tick_second(); if (pet.age_s % 10u == 0u) need_full |= 1u; }
+        if (mode == M_HATCH) {
+            if (b & (1u << BTN_SEL)) { go(M_RAISE); say_it("An egg. It's warm.", 2500); continue; }
+            if (redraw) { draw_hatch(); redraw = 0; }
+            continue;
+        }
+
+        /* ---- raising and the band: the transport */
+        if (b & (1u << BTN_PLAY)) {
+            if (playing) { playing = 0; b_held = 0; stop_ms = fm1_ms; if (dirty) save_now(); }
+            else { step = 15; samp_left = 0; played = 0; last_seq = bar_seq; playing = 1; }
+            redraw = 0xFFu;
+        }
+        if ((e2 = fm1_enc_take(ENC_KNOB2)) != 0) {
+            int32_t v = (int32_t)bpm + e2;
+            bpm = (uint32_t)(v < 60 ? 60 : v > 180 ? 180 : v);
+            if (mode == M_BAND) sv.band_bpm = (uint8_t)bpm; else P->bpm = (uint8_t)bpm;
+            redraw |= 1u; dirty |= 1u;
+        }
+
+        if (mode == M_BAND) {
+            uint32_t keep = (uint32_t)fm1_enc_take(ENC_KNOB3); (void)keep;
+            if (mv) { cursor = (cursor + NLIB + (uint32_t)mv) % NLIB; redraw = 0xFFu; }
+            if (e && LIB_READY[cursor]) { band_cycle(cursor, e > 0 ? 1 : -1); redraw = 0xFFu; }
+            if (bar_seq != last_seq) {          /* playing in the band feeds them a little */
+                last_seq = bar_seq;
+                for (l = 0; l < NLIB; l++) if (sv.band[l]) {
+                    pet_t *p = &sv.pet[sv.band[l] - 1u];
+                    if (p->hunger) p->hunger--;
+                    if (p->mood < 100u) p->mood++;
+                }
+                dirty |= 1u;
+            }
+            if (step != last_step) { last_step = step; if ((step & 3u) == 0u) { bob = !bob; anim++; redraw |= 8u; } }
+            if (redraw) { draw_band(bob); redraw = 0; }
+            if (dirty && !playing && fm1_ms - t_save > 30000u) { save_now(); t_save = fm1_ms; }
+            for (l = 0; l < 16u; l++) fm1_led_key(KEY_LED(l), playing && l == step);
+            fm1_led_key(BTN_PLAY, (int)playing);
+            continue;
+        }
+
+        /* ---- raising */
+        if ((e2 = fm1_enc_take(ENC_KNOB3)) != 0) {
+            int32_t v = (int32_t)swing + e2 * 4;
+            swing = (uint32_t)(v < 0 ? 0 : v > 128 ? 128 : v); P->swing = (uint8_t)swing; redraw |= 1u; dirty |= 1u;
+        }
+        if (b & (1u << BTN_SAVE)) { save_now(); say_it("Saved.", 1200); }
+        if (P->lib == LIB_DRUMS) {
+            if (e) mv = e > 0 ? 1 : -1;
+            if (mv) { lane = (lane + NLANE + (uint32_t)mv) % NLANE; redraw |= 4u; }
+            if (down & 0xFFFFu) {
+                P->lane[lane] ^= (uint16_t)(down & 0xFFFFu);
+                pl_drum[lane] = P->lane[lane];
+                if (!playing) trig_req |= 1u << lane;
+                redraw |= 4u; dirty |= 1u;
+            }
+            if (down & (7u << 16)) trig_req |= (down >> 16) & 7u;
+        } else {                                /* bass */
+            uint32_t root = 36u + (uint32_t)((int32_t)(int8_t)P->oct * 12);
+            if (mv) { int32_t o = (int8_t)P->oct + mv; P->oct = (uint8_t)(o < -1 ? -1 : o > 1 ? 1 : o); cur_note = 36u + (uint32_t)((int32_t)(int8_t)P->oct * 12) + cur_note % 12u; redraw |= 4u; }
+            if (e) { int32_t v = (int32_t)cur_note + e; cur_note = (uint32_t)(v < 24 ? 24 : v > 60 ? 60 : v); b_req_note = cur_note; trig_req |= 16u; redraw |= 4u; }
+            if (down >> 16) {                   /* a note key: A4.. = root + 0..10 */
+                uint32_t k = 0;
+                while (!(down >> (16u + k) & 1u)) k++;
+                cur_note = root + k;
+                b_req_note = cur_note; trig_req |= 16u;
+                if (keys & 0xFFFFu) {           /* step keys held: they take the note */
+                    for (l = 0; l < 16u; l++) if (keys >> l & 1u) { P->note[l] = (uint8_t)cur_note; P->gate |= (uint16_t)(1u << l); }
+                    down &= ~(keys & 0xFFFFu);
+                    dirty |= 1u;
+                }
+                redraw |= 4u;
+            }
+            if (down & 0xFFFFu) {
+                for (l = 0; l < 16u; l++) if (down >> l & 1u) {
+                    if (P->gate >> l & 1u) P->gate &= (uint16_t)~(1u << l);
+                    else { P->gate |= (uint16_t)(1u << l); P->note[l] = (uint8_t)cur_note; if (!playing) { b_req_note = cur_note; trig_req |= 16u; } }
+                }
+                redraw |= 4u; dirty |= 1u;
+            }
+            pl_bgate = P->gate;
+            for (l = 0; l < 16u; l++) pl_bnote[l] = P->note[l];
+        }
+
+        if (bar_seq != last_seq) { last_seq = bar_seq; eat_bar(); redraw |= 3u; }
+        while (fm1_ms - t_sec >= 1000u) { t_sec += 1000u; tick_second(); }
         if ((dirty & 2u) || (dirty && !playing && fm1_ms - t_save > 30000u)) { save_now(); t_save = fm1_ms; }
-        if (say_until && fm1_ms >= say_until) { say_until = 0; need_full |= 2u; }
-
-        /* ---- the screen and LEDs */
+        if (say_until && fm1_ms >= say_until) { say_until = 0; redraw |= 2u; }
+        if (P->lib != LIB_DRUMS && !playing && fm1_ms - t_anim > 600u) { t_anim = fm1_ms; anim++; redraw |= 8u; }
         if (step != last_step) {
             last_step = step;
-            if (playing && (step & 3u) == 0u) { bob = !bob; need_full |= 8u; }
-            need_full |= 4u;
+            if (playing && (step & 3u) == 0u) { bob = !bob; anim++; redraw |= 8u; }
+            redraw |= 4u;
         }
-        if (need_full & 1u) draw_top();
-        if (need_full & 8u || need_full & 1u) draw_pet(bob);
-        if (need_full & 2u) draw_words();
-        if (need_full & 4u) draw_grid();
-        need_full = 0;
+        if (redraw & 1u) draw_top();
+        if (redraw & 9u) draw_pet(bob);
+        if (redraw & 2u) draw_words();
+        if (redraw & 4u) draw_grid();
+        redraw = 0;
         for (l = 0; l < 16u; l++) {
-            int on = (int)(pat[lane] >> l & 1u);
+            int on = (int)((P->lib == LIB_DRUMS ? P->lane[lane] : P->gate) >> l & 1u);
             if (playing && l == step) on = !on;
             fm1_led_key(KEY_LED(l), on);
         }
+        for (l = 0; l < 11u; l++)
+            fm1_led_key(KEY_LED(16u + l), P->lib == LIB_BASS && cur_note == 36u + (uint32_t)((int32_t)(int8_t)P->oct * 12) + l);
         fm1_led_key(BTN_PLAY, (int)playing);
     }
 }

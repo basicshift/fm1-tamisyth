@@ -1,0 +1,29 @@
+# Nest -> DRUMS egg -> a whole life on fast-forward (house), screens along the way.
+300 btn 3
+600 btn 3
+900 btn 3
+1700 shot
+1800 keys 0x1110
+1900 keys 0
+2000 btn 12
+6200 shot
+14200 shot
+14300 btn 1
+14350 btn 1
+14400 keys 0x4444
+14500 keys 0
+21200 shot
+45200 shot
+45300 btn 0
+45400 keys 0x1010
+45500 keys 0
+51200 shot
+85200 shot
+85300 btn 0
+85400 keys 0x0400
+85500 keys 0
+101200 shot
+146200 shot
+147200 btn 12
+148200 shot
+148200 end

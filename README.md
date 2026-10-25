@@ -2,22 +2,33 @@
 
 A Tamagotchi-style pet for the M-VAVE FM-1 that lives on the drum beats you make, and teaches you to make them.
 
-Every bar your pattern plays, the pet eats it. Each stage has a lesson, and bars that meet it make the pet happy and
-grow it up: egg (a steady pulse), Blip (four on the floor), Kik (the backbeat), Hatling (syncopation and swing).
-What it ate as a teen decides its adult form: Crate (boom bap), Fourfloor (house), Chopper (breaks) or Echo (dub).
-It lives on powered-on time, since the FM-1 has no clock that runs while it is off: switched off, it sleeps.
+Pick a library (drums, percussion, bass or lead) and you get one of its three eggs at random. Raise it by
+learning that library: every bar your pattern plays, the pet eats it, and bars that meet its lesson grow it from
+egg to baby, child, teen and adult. What it ate as a teen decides its adult form. Raised pets live in the nest,
+and the band puts one pet per library together to play a song.
+
+| library | eggs | adult forms | status |
+| --- | --- | --- | --- |
+| drums | Tomcat, Kitbash, Rimshot | boom bap, house, breaks, dub | 0.1 |
+| percussion | (to come) | | 0.3 |
+| bass | Deep Dragon, Ember Dragon, Frost Dragon | sub, acid, disco, funk | 0.2 |
+| lead | (to come) | | 0.3 |
+
+Art: Deep Dragon is drawn from `assets/creatures/deep-dragon.png` (`python3 tools/dragon.py`); the drum lineage and the
+second and third egg of each library are placeholders until their own art lands. The pets live on powered-on time,
+since the FM-1 has no clock that runs while it is off: switched off, they sleep.
 
 ## Controls
 
 | | |
 | --- | --- |
-| keys F3..G#4 | the 16 steps of the selected lane |
-| keys A4, A#4, B4 | kick, snare, hat, played live |
-| OCT- / OCT+, KNOB1 | the lane: kick, snare, hat |
-| KNOB2 / KNOB3 | tempo 60..180 / swing 0..50 % |
-| PLAY | start / stop (stopping saves) |
-| SAVE | save now |
-| SEL + HOME, then HOME | a new egg |
+| HOME | the nest: your pets, a new egg, the band |
+| nest and menus | OCT- / OCT+ or KNOB1 move, SEL opens |
+| keys F3..G#4 | the 16 steps |
+| PLAY / KNOB2 / KNOB3 / SAVE | start and stop (stopping saves) / tempo / swing / save now |
+| drums | OCT- / OCT+ or KNOB1 the lane (kick, snare, hat); keys A4, A#4, B4 play them live |
+| bass | keys A4..G5 pick a note (held step keys take it); OCT- / OCT+ the octave; KNOB1 nudges the note |
+| band | OCT- / OCT+ a part, KNOB1 its pet, KNOB2 tempo, PLAY |
 
 ## Install
 
@@ -28,7 +39,7 @@ Keep M-VAVE's stock V15 at hand; holding OCT- at power-on is the USB rescue.
 ## Building
 
 Sprites: `node tools/sprites.mjs` regenerates `firmware/src/sprites.h`. On a computer: `tests/run_host.sh
-tests/scripts/pet_life.txt` runs a whole life on fast-forward (screens as PNG, sound as WAV). The firmware package
+tests/scripts/drums_life.txt` (or `bass_life.txt`) runs a whole life on fast-forward (screens as PNG, sound as WAV). The firmware package
 is built by GitHub Actions on every push to `main`.
 
 Built on [Dinghy](https://github.com/zvenson/dinghy) (zvenson), on Felucca's platform (Leo Kuroshita, Hügelton
