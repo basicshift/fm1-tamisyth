@@ -14,9 +14,11 @@ and the band puts one pet per library together to play a song.
 | bass | Deep Dragon, Ember Dragon, Frost Dragon | sub, acid, disco, funk | 0.2 |
 | lead | (to come) | | 0.3 |
 
-Art: Deep Dragon is drawn from `assets/creatures/deep-dragon.png` (`python3 tools/dragon.py`); the drum lineage and the
-second and third egg of each library are placeholders until their own art lands. The pets live on powered-on time,
-since the FM-1 has no clock that runs while it is off: switched off, they sleep.
+Art is 1-bit, ink on a dark LCD: each strip in `assets/art` is a PNG (white = ink) with a JSON naming its frames.
+Edit them in any pixel editor and run `python3 tools/mono.py` to rebuild `firmware/src/art.h`. Deep Dragon and the
+icons come from the sheet in `assets/source`; the drum line (`node tools/sprites.mjs`) and the second and third
+egg of each library are placeholders until their own art lands. The pets live on powered-on time, since the FM-1
+has no clock that runs while it is off: switched off, they sleep.
 
 ## Controls
 
@@ -26,6 +28,8 @@ since the FM-1 has no clock that runs while it is off: switched off, they sleep.
 | nest and menus | OCT- / OCT+ or KNOB1 move, SEL opens |
 | keys F3..G#4 | the 16 steps |
 | PLAY / KNOB2 / KNOB3 / SAVE | start and stop (stopping saves) / tempo / swing / save now |
+| SEQ / SEL + SEQ | clear the lane (bass: the notes) / clear the whole pattern |
+| SEQ twice, in the nest | release the pet under the cursor |
 | drums | OCT- / OCT+ or KNOB1 the lane (kick, snare, hat); keys A4, A#4, B4 play them live |
 | bass | keys A4..G5 pick a note (held step keys take it); OCT- / OCT+ the octave; KNOB1 nudges the note |
 | band | OCT- / OCT+ a part, KNOB1 its pet, KNOB2 tempo, PLAY |

@@ -1,0 +1,27 @@
+{
+ "cell": [
+  26,
+  24
+ ],
+ "frames": [
+  "feed",
+  "play",
+  "love",
+  "learn",
+  "sleep",
+  "care",
+  "guitar",
+  "mic",
+  "drums",
+  "piano",
+  "headphones",
+  "treble",
+  "star",
+  "trophy",
+  "photo",
+  "settings",
+  "home",
+  "stats"
+ ],
+ "note": "1-bit UI icons, centred in 26 x 24 cells."
+}

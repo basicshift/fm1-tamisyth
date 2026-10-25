@@ -1,0 +1,23 @@
+{
+ "cell": [
+  40,
+  36
+ ],
+ "frames": [
+  "idle0",
+  "idle1",
+  "blink",
+  "happy0",
+  "happy1",
+  "dance0",
+  "dance1",
+  "dance2",
+  "sleep0",
+  "sleep1",
+  "sad0",
+  "sad1",
+  "cheer0",
+  "cheer1"
+ ],
+ "note": "1-bit, white = ink. Frames sit bottom-centred in their cell. Edit freely; python3 tools/mono.py rebuilds firmware/src/art.h."
+}

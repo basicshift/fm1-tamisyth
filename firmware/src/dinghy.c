@@ -21,9 +21,8 @@
 static void app_idle(void);
 #define LCD_IDLE app_idle
 #include "platform.c"
-typedef struct { uint8_t w, h; const uint8_t *px; const uint16_t *pal[3]; } sprite_t;
-#include "sprites.h"
-#include "sprites_dragon.h"
+typedef struct { uint8_t w, h; const uint8_t *bits; } art_t;
+#include "art.h"                               /* tools/mono.py, from the PNG strips in assets/art */
 
 static void app_idle(void) {}
 
@@ -247,7 +246,7 @@ static int bass_ok(const pet_t *p, uint32_t gate, const bassinfo_t *b)
 }
 
 static char say[32];
-static uint32_t say_until, redraw, dirty, happy_until;
+static uint32_t say_until, redraw, dirty, happy_until, feed_until, cheer_until;
 static void put(char *d, const char *s) { while ((*d++ = *s++) != 0) {} }
 static void say_it(const char *s, uint32_t ms) { put(say, s); say_until = fm1_ms + ms; redraw |= 2u; }
 
@@ -286,6 +285,7 @@ static void eat_bar(void)
     P->bars++;
     if (P->stage != ST_EGG && hits >= 3u) {
         P->hunger = P->hunger > 3u ? (uint16_t)(P->hunger - 3u) : 0u;
+        feed_until = fm1_ms + 1200u;
         if (ok && P->hunger) P->hunger--;
     }
     if (P->stage == ST_TEEN && hits >= 3u && P->diet[f] < 60000u) P->diet[f]++;
@@ -308,6 +308,7 @@ static void eat_bar(void)
             P->form = (uint8_t)best;
         }
         say_it(P->stage == ST_BABY ? "It hatched!" : "It grew!", 4000);
+        cheer_until = fm1_ms + 4000u;
         redraw = 0xFFu;
         dirty |= 2u;
     }
@@ -327,14 +328,9 @@ static void tick_second(void)
 }
 
 /* ======================================================================================= the screen */
-#define C_BG    RGB(28, 31, 43)
-#define C_TXT   RGB(230, 230, 236)
-#define C_MUTE  RGB(130, 134, 150)
-#define C_SLOT  RGB(45, 50, 68)
-#define C_TEAL  RGB(79, 195, 181)
-#define C_HOT   RGB(255, 107, 107)
-#define C_GOLD  RGB(242, 193, 78)
-static const uint16_t LANE_COL[NLANE] = {RGB(255, 140, 90), RGB(242, 193, 78), RGB(127, 209, 198)};
+#define C_BG    RGB(10, 13, 9)                  /* the 1-bit look: ink on a dark LCD */
+#define C_INK    RGB(214, 234, 160)
+#define C_LO   RGB(70, 84, 52)
 enum { M_RAISE, M_NEST, M_PICK, M_HATCH, M_BAND };
 static uint32_t mode = M_NEST, cursor, lane, cur_note = 36, stop_ms, anim, t_sec;
 
@@ -349,29 +345,30 @@ static char *put_u(char *p, uint32_t v)
 }
 static char *cat(char *p, const char *s) { while (*s) *p++ = *s++; *p = 0; return p; }
 
-static const sprite_t *pet_sprite(const pet_t *p, int dancing)
+static void blit_art(const art_t *a, int32_t ox, int32_t oy, int32_t sc, uint16_t c)
 {
-    static const uint8_t KID[4] = {SP_EGG, SP_BLIP, SP_KIK, SP_HATLING};
-    static const uint8_t ADULT[4] = {SP_CRATE, SP_FOURFLOOR, SP_CHOPPER, SP_ECHO};
-    if (p->stage == ST_EGG) return &SPRITES[SP_EGG];
-    if (p->lib == LIB_DRUMS) return &SPRITES[p->stage < ST_ADULT ? KID[p->stage] : ADULT[p->form & 3u]];
-    if (fm1_ms < happy_until) return &DRAGON[DG_HAPPY0 + (anim & 1u)];
-    if (dancing) return &DRAGON[DG_DANCE0 + anim % 3u];
-    if (mode == M_RAISE && !playing && fm1_ms - stop_ms > 60000u) return &DRAGON[DG_SLEEP];
-    {
-        static const uint8_t IDLE[8] = {DG_IDLE0, DG_IDLE1, DG_IDLE0, DG_IDLE2, DG_IDLE0, DG_BLINK, DG_IDLE1, DG_IDLE0};
-        return &DRAGON[IDLE[anim & 7u]];
-    }
+    uint32_t x, y, bpr = (a->w + 7u) / 8u;
+    for (y = 0; y < a->h; y++)
+        for (x = 0; x < a->w; x++)
+            if (a->bits[y * bpr + x / 8u] & (0x80u >> (x & 7u)))
+                cv_rect(ox + (int32_t)x * sc, oy + (int32_t)y * sc, sc, sc, c);
 }
-static void blit_sprite(const sprite_t *sp, uint32_t variant, int32_t ox, int32_t oy, int32_t sc)
+static int asleep(void) { return mode == M_RAISE && !playing && fm1_ms - stop_ms > 60000u; }
+static const art_t *pet_art(const pet_t *p, int dancing)
 {
-    const uint16_t *pal = sp->pal[variant % 3u];
-    uint32_t x, y;
-    for (y = 0; y < sp->h; y++)
-        for (x = 0; x < sp->w; x++) {
-            uint8_t i = sp->px[y * sp->w + x];
-            if (i) cv_rect(ox + (int32_t)x * sc, oy + (int32_t)y * sc, sc, sc, pal[i]);
-        }
+    static const uint8_t KID[4] = {A_DRUM_LINE_EGG, A_DRUM_LINE_BLIP, A_DRUM_LINE_KIK, A_DRUM_LINE_HATLING};
+    static const uint8_t ADULT[4] = {A_DRUM_LINE_CRATE, A_DRUM_LINE_FOURFLOOR, A_DRUM_LINE_CHOPPER, A_DRUM_LINE_ECHO};
+    static const uint8_t IDLE[8] = {A_DEEP_DRAGON_IDLE0, A_DEEP_DRAGON_IDLE1, A_DEEP_DRAGON_IDLE0, A_DEEP_DRAGON_BLINK,
+                                    A_DEEP_DRAGON_IDLE1, A_DEEP_DRAGON_IDLE0, A_DEEP_DRAGON_IDLE1, A_DEEP_DRAGON_IDLE0};
+    int mine = p == P && mode == M_RAISE;
+    if (p->stage == ST_EGG) return &ART[A_DRUM_LINE_EGG];
+    if (p->lib == LIB_DRUMS) return &ART[p->stage < ST_ADULT ? KID[p->stage] : ADULT[p->form & 3u]];
+    if (mine && fm1_ms < cheer_until) return &ART[A_DEEP_DRAGON_CHEER0 + (anim & 1u)];
+    if (mine && fm1_ms < happy_until) return &ART[A_DEEP_DRAGON_HAPPY0 + (anim & 1u)];
+    if (dancing) return &ART[A_DEEP_DRAGON_DANCE0 + anim % 3u];
+    if (mine && asleep()) return &ART[A_DEEP_DRAGON_SLEEP0 + (anim >> 2 & 1u)];
+    if (p->hunger > 70u || p->mood < 30u) return &ART[A_DEEP_DRAGON_SAD0 + (anim >> 1 & 1u)];
+    return &ART[IDLE[anim & 7u]];
 }
 static void name_of(char *b, const pet_t *p)
 {
@@ -379,55 +376,74 @@ static void name_of(char *b, const pet_t *p)
     q = cat(q, "  ");
     cat(q, p->stage < ST_ADULT ? STAGE_WORD[p->stage] : FORM_NAME[p->lib][p->form & 3u]);
 }
-static void meter(int32_t x, int32_t y, int32_t w, uint32_t v, uint16_t c)
+static const uint8_t HEART[6] = {0x6C, 0xFE, 0xFE, 0x7C, 0x38, 0x10};   /* 7 x 6 */
+static void heart(int32_t x, int32_t y, uint16_t c)
 {
-    cv_rect(x, y, w, 6, C_SLOT);
-    cv_rect(x, y, (int32_t)((uint32_t)w * v / 100u), 6, c);
+    uint32_t r, k;
+    for (r = 0; r < 6u; r++) for (k = 0; k < 7u; k++) if (HEART[r] & (0x80u >> k)) cv_pset(x + (int32_t)k, y + (int32_t)r, c);
+}
+static void box(int32_t x, int32_t y, int32_t w, int32_t h, uint16_t c)
+{
+    cv_rect(x, y, w, 1, c); cv_rect(x, y + h - 1, w, 1, c); cv_rect(x, y, 1, h, c); cv_rect(x + w - 1, y, 1, h, c);
 }
 
-static void draw_top(void)                      /* 0..40 */
+static void draw_icons(void)                    /* 0..28: what the pet is doing, Tamagotchi style */
 {
-    char b[48], *p;
-    cv_begin(240, 40, C_BG);
-    {
-        char n[40];
-        int32_t wn;
-        name_of(n, P);
-        wn = cv_text(6, 2, &FONT_S, n, C_TXT);
-        p = put_u(b, bpm); p = cat(p, "bpm");
-        if (text_w(&FONT_S, b) + wn + 90 < 234) { p = cat(p, " sw"); p = put_u(p, swing * 100u / 256u); cat(p, "%"); }
-        if (text_w(&FONT_S, b) + wn + 8 < 234) cv_text(234 - text_w(&FONT_S, b), 2, &FONT_S, b, C_MUTE);
+    static const uint8_t ICON[6] = {A_ICONS_FEED, A_ICONS_PLAY, A_ICONS_LEARN, A_ICONS_SLEEP, A_ICONS_LOVE, A_ICONS_HOME};
+    int on[6];
+    uint32_t k;
+    on[0] = fm1_ms < feed_until; on[1] = (int)playing; on[2] = fm1_ms < happy_until || fm1_ms < cheer_until;
+    on[3] = asleep(); on[4] = P->stage != ST_EGG && P->mood >= 70u; on[5] = 0;
+    cv_begin(240, 28, C_BG);
+    for (k = 0; k < 6u; k++) {
+        const art_t *a = &ART[ICON[k]];
+        int32_t cx = 20 + (int32_t)k * 40;
+        blit_art(a, cx - (int32_t)a->w / 2, 2, 1, on[k] ? C_INK : C_LO);
+        if (on[k]) cv_rect(cx - 10, 25, 20, 2, C_INK);
     }
-    if (P->stage != ST_EGG) {
-        cv_text(6, 21, &FONT_S, "FED", C_MUTE);
-        meter(38, 27, 74, 100u - P->hunger, P->hunger > 70u ? C_HOT : C_TEAL);
-        cv_text(124, 21, &FONT_S, "JOY", C_MUTE);
-        meter(158, 27, 74, P->mood, P->mood < 30u ? C_HOT : C_GOLD);
-    } else {
-        cv_text(6, 21, &FONT_S, LIB_NAME[P->lib], C_MUTE);
-    }
+    cv_rect(0, 27, 240, 1, C_LO);
     cv_blit(0, 0);
 }
-static void draw_pet(int bob)                   /* 40..160 */
+static void draw_top(void)                      /* 28..46: name, then food pips and joy hearts */
 {
-    const sprite_t *sp = pet_sprite(P, playing);
-    int32_t sc = sp->w > 40u ? 2 : 3, w = (int32_t)sp->w * sc, h = (int32_t)sp->h * sc;
-    cv_begin(240, 120, C_BG);
-    cv_rect(40, 116, 160, 3, C_SLOT);
-    blit_sprite(sp, P->type, (240 - w) / 2, 118 - h - (bob && sc == 3 ? 3 : 0), sc);
-    if (!playing && sp != &DRAGON[DG_SLEEP]) cv_text(186, 8, &FONT_S, "z z", C_MUTE);
-    cv_blit(0, 40);
-}
-static void draw_words(void)                    /* 160..192 */
-{
-    cv_begin(240, 32, C_BG);
-    if (fm1_ms < say_until) cv_text(6, 0, &FONT_S, say, C_GOLD);
-    else cv_text(6, 0, &FONT_S, P->stage < ST_ADULT ? LESSON[P->lib][P->stage] : ADULT_TIP[P->lib][P->form & 3u], C_TXT);
-    if (P->stage < ST_ADULT) {
-        cv_rect(6, 22, 228, 4, C_SLOT);
-        cv_rect(6, 22, (int32_t)(228u * P->prog / NEED[P->stage]), 4, C_TEAL);
+    uint32_t k;
+    cv_begin(240, 18, C_BG);
+    cv_text(6, 1, &FONT_S, EGG_NAME[P->lib][P->type % 3u], C_INK);
+    if (P->stage != ST_EGG) {
+        uint32_t fed = (100u - P->hunger + 10u) / 20u, joy = (P->mood + 10u) / 20u;
+        for (k = 0; k < 5u; k++) {
+            if (k < fed) cv_rect(150 + (int32_t)k * 8, 6, 6, 6, C_INK); else box(150 + (int32_t)k * 8, 6, 6, 6, C_LO);
+            heart(194 + (int32_t)k * 9, 6, k < joy ? C_INK : C_LO);
+        }
     }
-    cv_blit(0, 160);
+    cv_blit(0, 28);
+    draw_icons();
+}
+static void draw_pet(int bob)                   /* 46..158 */
+{
+    const art_t *a = pet_art(P, playing);
+    char b[24], *p;
+    int32_t sc = a->h * 3u <= 100u ? 3 : 2, w = (int32_t)a->w * sc, h = (int32_t)a->h * sc;
+    cv_begin(240, 112, C_BG);
+    cv_text(4, 0, &FONT_S, P->stage < ST_ADULT ? STAGE_WORD[P->stage] : FORM_NAME[P->lib][P->form & 3u], C_LO);
+    p = cat(put_u(b, bpm), " bpm");
+    if (swing) { p = cat(p, " sw"); cat(put_u(p, swing * 100u / 256u), "%"); }
+    cv_text(236 - text_w(&FONT_S, b), 0, &FONT_S, b, C_LO);
+    cv_rect(40, 108, 160, 1, C_LO);
+    blit_art(a, (240 - w) / 2, 107 - h - (bob && P->lib == LIB_DRUMS ? 3 : 0), sc, C_INK);
+    if (P->lib == LIB_DRUMS && asleep()) cv_text(176, 30, &FONT_S, "z z", C_LO);
+    cv_blit(0, 46);
+}
+static void draw_words(void)                    /* 158..192 */
+{
+    cv_begin(240, 34, C_BG);
+    cv_text(6, 2, &FONT_S, fm1_ms < say_until ? say
+            : P->stage < ST_ADULT ? LESSON[P->lib][P->stage] : ADULT_TIP[P->lib][P->form & 3u], C_INK);
+    if (P->stage < ST_ADULT) {
+        box(6, 24, 228, 6, C_LO);
+        cv_rect(7, 25, (int32_t)(226u * P->prog / NEED[P->stage]), 4, C_INK);
+    }
+    cv_blit(0, 158);
 }
 static void draw_grid(void)                     /* 192..240 */
 {
@@ -436,53 +452,60 @@ static void draw_grid(void)                     /* 192..240 */
     if (P->lib == LIB_DRUMS) {
         for (l = 0; l < NLANE; l++) {
             int32_t y = 2 + (int32_t)l * 15;
-            cv_rect(4, y, 24, 12, l == lane ? LANE_COL[l] : C_SLOT);
-            cv_text(8, y - 3, &FONT_S, l == 0 ? "K" : l == 1 ? "S" : "H", l == lane ? C_BG : C_MUTE);
+            const char *lab = l == 0 ? "K" : l == 1 ? "S" : "H";
+            if (l == lane) cv_rect(4, y, 24, 13, C_INK); else box(4, y, 24, 13, C_LO);
+            cv_text(12, y - 2, &FONT_S, lab, l == lane ? C_BG : C_LO);
             for (s = 0; s < 16u; s++) {
                 int32_t x = 32 + (int32_t)s * 13 + (int32_t)(s / 4u);
-                uint16_t c = P->lane[l] >> s & 1u ? LANE_COL[l] : (s % 4u == 0 ? RGB(62, 68, 90) : C_SLOT);
-                if (playing && s == step) c = P->lane[l] >> s & 1u ? C_WHITE : RGB(90, 96, 120);
-                cv_rect(x, y, 11, 12, c);
+                int on = P->lane[l] >> s & 1u, here = playing && s == step;
+                if (on) cv_rect(x, y, 11, 13, here ? C_LO : C_INK);
+                else { box(x, y, 11, 13, s % 4u == 0 ? C_INK : C_LO); if (here) cv_rect(x + 2, y + 2, 7, 9, C_LO); }
             }
         }
     } else {                                    /* bass: a column per step, the note as height */
         char b[8];
         static const char *const NN[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
         put_u(cat(b, NN[cur_note % 12u]), cur_note / 12u - 1u);
-        cv_rect(4, 2, 24, 42, RGB(166, 216, 74));
-        cv_text(6, 14, &FONT_S, b, C_BG);
+        cv_rect(4, 2, 24, 44, C_INK);
+        cv_text(16 - text_w(&FONT_S, b) / 2, 14, &FONT_S, b, C_BG);
         for (s = 0; s < 16u; s++) {
             int32_t x = 32 + (int32_t)s * 13 + (int32_t)(s / 4u);
-            cv_rect(x, 2, 11, 42, s % 4u == 0 ? RGB(40, 45, 62) : RGB(34, 38, 52));
+            int here = playing && s == step;
+            cv_rect(x, 45, 11, 1, s % 4u == 0 ? C_INK : C_LO);
             if (P->gate >> s & 1u) {
                 int32_t hgt = 6 + ((int32_t)P->note[s] - 24);
                 if (hgt > 42) hgt = 42;
                 if (hgt < 4) hgt = 4;
-                cv_rect(x, 44 - hgt, 11, hgt, playing && s == step ? C_WHITE : RGB(166, 216, 74));
-            } else if (playing && s == step) cv_rect(x, 40, 11, 4, RGB(90, 96, 120));
+                if (here) box(x, 44 - hgt, 11, hgt, C_INK); else cv_rect(x, 44 - hgt, 11, hgt, C_INK);
+            } else if (here) cv_rect(x, 40, 11, 4, C_LO);
         }
     }
     cv_blit(0, 192);
 }
 
-static void draw_list(const char *title, const char *const *rows, const uint8_t *dim, uint32_t n, const char *hint)
+static void draw_list(const char *title, const char *const *rows, const uint8_t *dim, const uint8_t *icon, uint32_t n,
+                      int32_t rowh, const char *hint)
 {
     uint32_t i;
     lcd_fill(0, 0, 240, 240, C_BG);
-    draw_text_box(0, 8, 240, &FONT_L, title, C_GOLD, 1);
+    draw_text_box(0, 6, 240, &FONT_L, title, C_INK, 1);
+    lcd_fill(0, 40, 240, 1, C_LO);
     for (i = 0; i < n; i++) {
-        uint16_t c = dim && dim[i] ? C_MUTE : C_TXT;
-        if (i == cursor) lcd_fill(4, 44 + i * 17, 232, 17, C_SLOT);
-        draw_text_box(10, 44 + i * 17, 220, &FONT_S, rows[i], i == cursor ? C_WHITE : c, 0);
-        if (i == cursor) lcd_fill(4, 44 + i * 17, 3, 17, C_GOLD);
+        int32_t y = 46 + (int32_t)i * rowh, tx = 10;
+        uint16_t bg = i == cursor ? C_INK : C_BG, fg = i == cursor ? C_BG : dim && dim[i] ? C_LO : C_INK;
+        cv_begin(232, (uint32_t)rowh - 1u, bg);
+        if (icon && icon[i] != 0xFF) { const art_t *a = &ART[icon[i]]; blit_art(a, 4, (rowh - 1 - (int32_t)a->h) / 2, 1, fg); tx = 36; }
+        cv_text(tx, (rowh - 1 - 16) / 2, &FONT_S, rows[i], fg);
+        cv_blit(4, (uint32_t)y);
     }
-    draw_text_box(0, 222, 240, &FONT_S, hint, C_MUTE, 1);
+    draw_text_box(0, 222, 240, &FONT_S, hint, C_LO, 1);
 }
 
 static char rowbuf[10][32];
 static const char *rowp[10];
-static uint8_t rowdim[10], rowpet[10];
-static uint32_t nrows;
+static uint8_t rowdim[10], rowpet[10], rowicon[10];
+static uint32_t nrows, release_ms;
+static const uint8_t LIB_ICON[NLIB] = {A_ICONS_DRUMS, A_ICONS_STAR, A_ICONS_GUITAR, A_ICONS_PIANO};
 
 static void build_nest(void)
 {
@@ -498,60 +521,65 @@ static void build_nest(void)
     for (i = 0; i < nrows; i++) rowp[i] = rowbuf[i];
     if (cursor >= nrows) cursor = nrows - 1u;
 }
-static void draw_nest(void) { build_nest(); draw_list("NEST", rowp, rowdim, nrows, "OCT move   SEL open"); }
-
+static void draw_nest(void)
+{
+    build_nest();
+    draw_list("NEST", rowp, rowdim, 0, nrows, 17,
+              release_ms && fm1_ms - release_ms < 3000u ? "SEQ again: release it" : "SEL open   SEQ release");
+}
 static void draw_pick(void)
 {
     uint32_t i;
     for (i = 0; i < NLIB; i++) {
         char *q = cat(rowbuf[i], LIB_NAME[i]);
         if (!LIB_READY[i]) cat(q, "  (soon)");
-        rowp[i] = rowbuf[i]; rowdim[i] = (uint8_t)!LIB_READY[i];
+        rowp[i] = rowbuf[i]; rowdim[i] = (uint8_t)!LIB_READY[i]; rowicon[i] = LIB_ICON[i];
     }
-    draw_list("PICK A LIBRARY", rowp, rowdim, NLIB, "SEL: get an egg   HOME back");
+    draw_list("PICK A LIBRARY", rowp, rowdim, rowicon, NLIB, 30, "SEL: get an egg   HOME back");
 }
-
 static void draw_hatch(void)
 {
     char b[40];
+    const art_t *a = &ART[A_DRUM_LINE_EGG];
     lcd_fill(0, 0, 240, 240, C_BG);
-    draw_text_box(0, 10, 240, &FONT_S, "You got", C_MUTE, 1);
-    draw_text_box(0, 28, 240, &FONT_L, EGG_NAME[P->lib][P->type % 3u], C_GOLD, 1);
+    draw_text_box(0, 8, 240, &FONT_S, "You got", C_LO, 1);
+    draw_text_box(0, 26, 240, &FONT_L, EGG_NAME[P->lib][P->type % 3u], C_INK, 1);
     cv_begin(240, 120, C_BG);
-    blit_sprite(&SPRITES[SP_EGG], P->type, 60, 0, 3);
-    cv_blit(0, 70);
+    blit_art(a, (240 - (int32_t)a->w * 3) / 2, 118 - (int32_t)a->h * 3, 3, C_INK);
+    cv_blit(0, 66);
     cat(cat(b, LIB_NAME[P->lib]), " egg");
-    draw_text_box(0, 196, 240, &FONT_S, b, C_TXT, 1);
-    draw_text_box(0, 220, 240, &FONT_S, "SEL: start raising it", C_MUTE, 1);
+    draw_text_box(0, 194, 240, &FONT_S, b, C_INK, 1);
+    draw_text_box(0, 218, 240, &FONT_S, "SEL: start raising it", C_LO, 1);
 }
-
 static void draw_band(int bob)
 {
     uint32_t l;
     char b[40];
+    cv_begin(240, 28, C_BG);
+    cv_text(6, 4, &FONT_S, "BAND", C_INK);
+    cat(put_u(b, bpm), " bpm");
+    cv_text(234 - text_w(&FONT_S, b), 4, &FONT_S, b, C_LO);
+    cv_rect(0, 27, 240, 1, C_LO);
+    cv_blit(0, 0);
     cv_begin(240, 120, C_BG);
     for (l = 0; l < NLIB; l++) {
         int32_t cx = 30 + (int32_t)l * 60;
-        cv_rect(cx - 28, 0, 56, 120, l == cursor ? C_SLOT : C_BG);
+        const art_t *ic = &ART[LIB_ICON[l]];
+        if (l == cursor) box(cx - 29, 4, 58, 116, C_INK);
         if (sv.band[l]) {
             const pet_t *p = &sv.pet[sv.band[l] - 1u];
-            const sprite_t *sp = pet_sprite(p, playing);
-            blit_sprite(sp, p->type, cx - (int32_t)sp->w / 2, 100 - (int32_t)sp->h - (bob && playing ? 2 : 0), 1);
+            const art_t *a = pet_art(p, playing);
+            int32_t sc = a->w * 2u <= 54u && a->h * 2u <= 84u ? 2 : 1;
+            blit_art(a, cx - (int32_t)a->w * sc / 2, 90 - (int32_t)a->h * sc - (bob && playing ? 2 : 0), sc, C_INK);
         }
-        cv_text(cx - text_w(&FONT_S, l == 0 ? "DRM" : l == 1 ? "PRC" : l == 2 ? "BAS" : "LEAD") / 2, 102, &FONT_S,
-                l == 0 ? "DRM" : l == 1 ? "PRC" : l == 2 ? "BAS" : "LEAD", LIB_READY[l] ? C_TXT : C_MUTE);
+        blit_art(ic, cx - (int32_t)ic->w / 2, 93, 1, LIB_READY[l] ? C_INK : C_LO);
     }
-    cv_blit(0, 40);
-    cv_begin(240, 40, C_BG);
-    cv_text(6, 2, &FONT_S, "BAND", C_GOLD);
-    cat(put_u(b, bpm), " bpm");
-    cv_text(234 - text_w(&FONT_S, b), 2, &FONT_S, b, C_MUTE);
-    cv_blit(0, 0);
+    cv_blit(0, 28);
     cv_begin(240, 80, C_BG);
     if (sv.band[cursor]) name_of(b, &sv.pet[sv.band[cursor] - 1u]);
     else put(b, LIB_READY[cursor] ? "(empty: KNOB1 picks)" : "(this library: soon)");
-    cv_text(6, 4, &FONT_S, b, C_TXT);
-    cv_text(6, 56, &FONT_S, "OCT part  KNOB1 pet  PLAY", C_MUTE);
+    cv_text(6, 10, &FONT_S, b, C_INK);
+    cv_text(6, 54, &FONT_S, "OCT part  KNOB1 pet  PLAY", C_LO);
     cv_blit(0, 160);
 }
 
@@ -633,7 +661,18 @@ static void app_main(void)
         if (mode == M_NEST || mode == M_PICK) {
             uint32_t n = mode == M_NEST ? (build_nest(), nrows) : NLIB;
             if (e) mv = e > 0 ? 1 : -1;
-            if (mv) { cursor = (cursor + n + (uint32_t)mv) % n; redraw |= 1u; }
+            if (mv) { cursor = (cursor + n + (uint32_t)mv) % n; release_ms = 0; redraw |= 1u; }
+            if (mode == M_NEST && (b & (1u << BTN_SEQ)) && rowpet[cursor] < NPET) {   /* release a pet: SEQ twice */
+                if (release_ms && fm1_ms - release_ms < 3000u) {
+                    uint32_t t = rowpet[cursor], l2;
+                    for (l2 = 0; l2 < NLIB; l2++) if (sv.band[l2] == t + 1u) sv.band[l2] = 0;
+                    memset(&sv.pet[t], 0, sizeof sv.pet[t]);
+                    if (sv.cur == t) sv.cur = 0xFF;
+                    release_ms = 0; save_now();
+                } else release_ms = fm1_ms;
+                redraw |= 1u;
+            }
+            if (release_ms && fm1_ms - release_ms >= 3000u) { release_ms = 0; redraw |= 1u; }
             if (b & (1u << BTN_SEL)) {
                 if (mode == M_NEST) {
                     uint8_t t = rowpet[cursor];
@@ -695,6 +734,14 @@ static void app_main(void)
             swing = (uint32_t)(v < 0 ? 0 : v > 128 ? 128 : v); P->swing = (uint8_t)swing; redraw |= 1u; dirty |= 1u;
         }
         if (b & (1u << BTN_SAVE)) { save_now(); say_it("Saved.", 1200); }
+        if (b & (1u << BTN_SEQ)) {              /* SEQ clears the lane (bass: the notes); SEL + SEQ the whole pattern */
+            int all = (fm1_in.buttons & (1u << BTN_SEL)) != 0;
+            if (P->lib == LIB_DRUMS) {
+                for (l = 0; l < NLANE; l++) if (all || l == lane) { P->lane[l] = 0; pl_drum[l] = 0; }
+            } else { P->gate = 0; pl_bgate = 0; }
+            say_it(all || P->lib != LIB_DRUMS ? "Pattern cleared." : "Lane cleared.", 1500);
+            redraw |= 4u; dirty |= 1u;
+        }
         if (P->lib == LIB_DRUMS) {
             if (e) mv = e > 0 ? 1 : -1;
             if (mv) { lane = (lane + NLANE + (uint32_t)mv) % NLANE; redraw |= 4u; }
@@ -741,6 +788,12 @@ static void app_main(void)
             last_step = step;
             if (playing && (step & 3u) == 0u) { bob = !bob; anim++; redraw |= 8u; }
             redraw |= 4u;
+        }
+        {
+            static uint32_t icons_was;
+            uint32_t now_icons = (fm1_ms < feed_until) | (uint32_t)(fm1_ms < happy_until) << 1 | (uint32_t)(fm1_ms < cheer_until) << 2
+                               | (uint32_t)asleep() << 3 | (uint32_t)(P->mood >= 70u) << 4 | (uint32_t)(P->hunger > 70u || P->mood < 30u) << 5;
+            if (now_icons != icons_was) { icons_was = now_icons; redraw |= 9u; }
         }
         if (redraw & 1u) draw_top();
         if (redraw & 9u) draw_pet(bob);
