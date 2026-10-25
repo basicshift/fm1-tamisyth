@@ -1,7 +1,7 @@
 {
  "cell": [
-  47,
-  29
+  94,
+  56
  ],
  "frames": [
   "idle0",
@@ -19,7 +19,9 @@
   "cheer0",
   "cheer1",
   "listen0",
-  "listen1"
+  "listen1",
+  "egg",
+  "hatch"
  ],
- "note": "Tomcat (drums), from assets/source/tomcat-1bit-sheet.png, redrawn in the two inks: cyan (122,245,234) lines, pink (242,134,233) patches; black = empty. Frames sit bottom-centred."
+ "note": "Tomcat (drums), from Lee's two-colour screens (assets/source/tomcat-2colour-screens.png). Cyan = ink, pink = accent, black = empty. Still to draw in this style: blink, sleep, sad (they reuse idle and the hatching frame for now). Mirrored frames are flipped copies."
 }

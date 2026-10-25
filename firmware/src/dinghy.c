@@ -389,11 +389,13 @@ static void blit_art(const art_t *a, int32_t ox, int32_t oy, int32_t sc, uint16_
                 cv_rect(ox + (int32_t)x * sc, oy + (int32_t)y * sc, sc, sc, c == C_LO ? C_LO : C_ACC);
 }
 static int asleep(void) { return mode == M_RAISE && !playing && fm1_ms - stop_ms > 60000u; }
-typedef struct { uint8_t idle0, idle1, blink, happy, dance, sleep, sad, cheer; } anim_t;   /* pairs / a triple follow */
+typedef struct { uint8_t idle0, idle1, blink, happy, dance, sleep, sad, cheer, egg, hatch; } anim_t;   /* pairs / a triple follow */
 static const anim_t AXOLOTL_ANIM = {A_AXOLOTL_IDLE0, A_AXOLOTL_IDLE1, A_AXOLOTL_BLINK, A_AXOLOTL_HAPPY0,
-                                    A_AXOLOTL_DANCE0, A_AXOLOTL_SLEEP0, A_AXOLOTL_SAD0, A_AXOLOTL_CHEER0};
+                                    A_AXOLOTL_DANCE0, A_AXOLOTL_SLEEP0, A_AXOLOTL_SAD0, A_AXOLOTL_CHEER0,
+                                    A_EGG_EGG, A_AXOLOTL_CHEER0};
 static const anim_t TOMCAT_ANIM = {A_TOMCAT_IDLE0, A_TOMCAT_IDLE1, A_TOMCAT_BLINK, A_TOMCAT_HAPPY0,
-                                   A_TOMCAT_DANCE0, A_TOMCAT_SLEEP0, A_TOMCAT_SAD0, A_TOMCAT_CHEER0};
+                                   A_TOMCAT_DANCE0, A_TOMCAT_SLEEP0, A_TOMCAT_SAD0, A_TOMCAT_CHEER0,
+                                   A_TOMCAT_EGG, A_TOMCAT_HATCH};
 static const anim_t *anim_of(const pet_t *p)
 {
     return p->lib == LIB_DRUMS ? &TOMCAT_ANIM : p->lib == LIB_BASS ? &AXOLOTL_ANIM : 0;
@@ -402,7 +404,9 @@ static const art_t *pet_art(const pet_t *p, int dancing)
 {
     const anim_t *an = anim_of(p);
     int mine = p == P && mode == M_RAISE;
-    if (p->stage == ST_EGG || !an) return &ART[A_EGG_EGG];
+    if (!an) return &ART[A_EGG_EGG];
+    if (p->stage == ST_EGG) return &ART[an->egg];
+    if (mine && p->stage == ST_BABY && fm1_ms < cheer_until) return &ART[an->hatch];   /* just out of the shell */
     if (mine && fm1_ms < cheer_until) return &ART[an->cheer + (anim & 1u)];
     if (mine && fm1_ms < happy_until) return &ART[an->happy + (anim & 1u)];
     if (dancing) return &ART[an->dance + anim % 3u];
@@ -468,18 +472,19 @@ static void draw_pet(int bob)                   /* 46..158 */
     const anim_t *an = anim_of(P);
     char b[24], *p;
     uint32_t tall = a->h, i;
-    int32_t sc, w, h;
-    if (an && P->stage != ST_EGG)               /* one size for all of a creature's frames: its tallest decides */
+    int32_t sc, w, h, floor_y;
+    if (an)                                     /* one size for all of a creature's frames: its tallest decides */
         for (i = an->idle0; i < an->idle0 + 16u && i < A_COUNT; i++) if (ART[i].h > tall) tall = ART[i].h;
     sc = tall * 3u <= 104u ? 3 : 2; w = (int32_t)a->w * sc; h = (int32_t)a->h * sc;
+    floor_y = tall * (uint32_t)sc > 104u ? 112 : 108;   /* big creatures stand on the bottom edge */
     cv_begin(240, 112, C_BG);
-    cv_text(4, 0, &FONT_S, P->stage < ST_ADULT ? STAGE_WORD[P->stage] : FORM_NAME[P->lib][P->form & 3u], C_LO);
+    if (floor_y == 108) cv_rect(40, 108, 160, 1, C_LO);
+    blit_art(a, (240 - w) / 2, floor_y - h - (bob && !an ? 3 : 0), sc, C_INK);
+    cv_text(4, 0, &FONT_S, P->stage < ST_ADULT ? STAGE_WORD[P->stage] : FORM_NAME[P->lib][P->form & 3u], C_INK);
     p = cat(put_u(b, bpm), " bpm");
     if (swing) { p = cat(p, " sw"); cat(put_u(p, swing * 100u / 256u), "%"); }
-    cv_text(236 - text_w(&FONT_S, b), 0, &FONT_S, b, C_LO);
-    cv_rect(40, 108, 160, 1, C_LO);
-    blit_art(a, (240 - w) / 2, 107 - h - (bob && !anim_of(P) ? 3 : 0), sc, C_INK);
-    if (!anim_of(P) && asleep()) cv_text(176, 30, &FONT_S, "z z", C_LO);
+    cv_text(236 - text_w(&FONT_S, b), 0, &FONT_S, b, C_INK);
+    if (!an && asleep()) cv_text(176, 30, &FONT_S, "z z", C_LO);
     cv_blit(0, 46);
 }
 /* ---- the guide: what to do next, in words, with the keys and the button to press blinking */
@@ -548,7 +553,8 @@ static void draw_words(void)                    /* 158..192 */
     cv_begin(240, 34, C_BG);
     if (fm1_ms < say_until) cv_text(6, 2, &FONT_S, say, C_INK);
     else if (guide_txt) {                       /* the next thing to do, with an arrow */
-        cv_rect(6, 6, 8, 8, C_ACC);
+        uint32_t r;
+        for (r = 0; r < 9u; r++) cv_rect(7, 5 + (int32_t)r, (int32_t)(r < 5u ? r : 8u - r) + 1, 1, C_ACC);   /* a play arrow */
         cv_text(20, 2, &FONT_S, guide_txt, C_INK);
     } else cv_text(6, 2, &FONT_S, P->stage < ST_ADULT ? LESSON[P->lib][P->stage] : ADULT_TIP[P->lib][P->form & 3u], C_INK);
     if (P->stage < ST_ADULT) {
@@ -659,12 +665,13 @@ static void draw_pick(void)
 static void draw_hatch(void)
 {
     char b[40];
-    const art_t *a = &ART[A_EGG_EGG];
+    const art_t *a = anim_of(P) ? &ART[anim_of(P)->egg] : &ART[A_EGG_EGG];
+    int32_t sc = a->h * 3u <= 120u ? 3 : 2;
     lcd_fill(0, 0, 240, 240, C_BG);
     draw_text_box(0, 8, 240, &FONT_S, "You got", C_LO, 1);
     draw_text_box(0, 26, 240, &FONT_L, EGG_NAME[P->lib][P->type % 3u], C_INK, 1);
     cv_begin(240, 120, C_BG);
-    blit_art(a, (240 - (int32_t)a->w * 3) / 2, 118 - (int32_t)a->h * 3, 3, C_INK);
+    blit_art(a, (240 - (int32_t)a->w * sc) / 2, 118 - (int32_t)a->h * sc, sc, C_INK);
     cv_blit(0, 66);
     cat(cat(b, LIB_NAME[P->lib]), " egg");
     draw_text_box(0, 194, 240, &FONT_S, b, C_INK, 1);
