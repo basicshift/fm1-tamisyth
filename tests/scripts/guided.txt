@@ -1,0 +1,23 @@
+# A first run, following only what the screen and LEDs say.
+300 shot
+400 btn 3
+700 shot
+800 btn 3
+1100 shot
+1200 btn 3
+1500 shot
+3500 shot
+3600 keys 0x1110
+3700 keys 0
+3800 shot
+3900 btn 12
+6000 shot
+14500 shot
+14600 btn 1
+14700 shot
+14800 btn 1
+14900 shot
+15000 keys 0x4444
+15100 keys 0
+15200 shot
+15200 end

@@ -7,6 +7,17 @@ learning that library: every bar your pattern plays, the pet eats it, and bars t
 egg to baby, child, teen and adult. What it ate as a teen decides its adult form. Raised pets live in the nest,
 and the band puts one pet per library together to play a song.
 
+The screen always says what to do next, and the keys and buttons to press blink: tap the blinking steps, press
+the blinking note (bass), pick the row with OCT, press PLAY. The baby and child stages learn a training song:
+
+| library | baby | child | teen |
+| --- | --- | --- | --- |
+| drums | Stomp stomp clap (boom boom clap) | Rock beat | your own, off the beat or swung |
+| bass | Twinkle Twinkle | In the Hall of the Mountain King (Grieg) | your own, on the off-beats |
+
+The songs are public-domain tunes or bare rhythms; a song stage passes when every note is there, with a couple of
+extras allowed.
+
 | library | eggs | adult forms | status |
 | --- | --- | --- | --- |
 | drums | Tomcat, Kitbash, Rimshot | boom bap, house, breaks, dub | 0.1 |

@@ -1,0 +1,58 @@
+# Bass, guided: hatch, then Twinkle Twinkle, then Mountain King, one note at a time.
+300 btn 3
+500 btn 1
+600 btn 1
+700 btn 3
+1000 btn 3
+1300 shot
+1500 keys 0x1
+1600 keys 0
+1700 shot
+1800 btn 12
+13000 shot
+13200 keys 0x4
+13280 keys 0
+13450 shot
+13500 keys 0x800000
+13580 keys 0
+13750 shot
+13800 keys 0x10
+13880 keys 0
+14050 keys 0x40
+14130 keys 0
+14300 keys 0x2000000
+14380 keys 0
+14550 keys 0x100
+14630 keys 0
+14800 keys 0x400
+14880 keys 0
+15050 keys 0x800000
+15130 keys 0
+15300 keys 0x1000
+15380 keys 0
+15550 shot
+45000 shot
+46000 shot
+46050 keys 0x40000
+46130 keys 0
+46300 keys 0x4
+46380 keys 0
+46550 keys 0x80000
+46630 keys 0
+46800 keys 0x10
+46880 keys 0
+47050 keys 0x200000
+47130 keys 0
+47300 keys 0x40
+47380 keys 0
+47550 keys 0x800000
+47630 keys 0
+47800 keys 0x100
+47880 keys 0
+48050 keys 0x80000
+48130 keys 0
+48300 keys 0x400
+48380 keys 0
+48550 shot
+90000 shot
+90000 end

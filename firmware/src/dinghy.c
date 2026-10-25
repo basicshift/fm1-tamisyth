@@ -157,9 +157,9 @@ static const char *const STAGE_WORD[4] = {"egg", "baby", "child", "teen"};
 static const char *const FORM_NAME[NLIB][4] = {
     {"boom bap", "house", "breaks", "dub"}, {"", "", "", ""}, {"sub", "acid", "disco", "funk"}, {"", "", "", ""}};
 static const char *const LESSON[NLIB][4] = {
-    {"Hatch me: kick every beat", "4 kicks + some hats", "Snare on 2 and 4 (5,13)", "Kick off the beat, or swing"},
+    {"Hatch me: kick every beat", "Song: Stomp stomp clap", "Song: Rock beat", "Kick off the beat, or swing"},
     {"", "", "", ""},
-    {"Hatch me: a note on step 1", "A note on every beat", "Root + its octave or 5th", "Notes on the off-beats"},
+    {"Hatch me: a note on step 1", "Song: Twinkle Twinkle", "Song: Mountain King", "Notes on the off-beats"},
     {"", "", "", ""}};
 static const char *const ADULT_TIP[NLIB][4] = {
     {"Boom bap: swing it, lay back", "House: 4 kicks, offbeat hats", "Breaks: busy snares, odd kicks", "Dub: less is more"},
@@ -186,6 +186,22 @@ static struct save {
 #define SAVE_VERSION 2u
 static pet_t *P;                                /* the pet being raised */
 
+/* ---- training songs: the baby and child stages learn a tune you may know (public domain or a bare rhythm).
+ * Steps are 16ths; bass notes are semitones above C, compared in any octave. */
+typedef struct { const char *name; uint16_t lane[NLANE]; uint16_t gate; uint8_t note[16]; } song_t;
+static const song_t SONG_STOMP = {"Stomp stomp clap", {0x0505u, 0x1010u, 0}, 0, {0}};          /* boom boom CLAP */
+static const song_t SONG_ROCK = {"Rock beat", {0x0501u, 0x1010u, 0x5555u}, 0, {0}};
+static const song_t SONG_TWINKLE = {"Twinkle Twinkle", {0, 0, 0}, 0x1555u,                   /* C C G G A A G */
+                                    {0, 0, 0, 0, 7, 0, 7, 0, 9, 0, 9, 0, 7, 0, 0, 0}};
+static const song_t SONG_MOUNTAIN = {"Mountain King", {0, 0, 0}, 0x1555u,                    /* Grieg, 1875 */
+                                     {0, 0, 2, 0, 3, 0, 5, 0, 7, 0, 3, 0, 7, 0, 0, 0}};
+static const song_t *song_for(uint32_t lib, uint32_t stage)
+{
+    if (stage == 1u) return lib == 0u ? &SONG_STOMP : &SONG_TWINKLE;
+    if (stage == 2u) return lib == 0u ? &SONG_ROCK : &SONG_MOUNTAIN;
+    return 0;
+}
+
 static uint32_t pc16(uint32_t v) { uint32_t c = 0; v &= 0xFFFFu; while (v) { v &= v - 1u; c++; } return c; }
 
 static uint32_t drum_form(const uint16_t *b)
@@ -200,8 +216,16 @@ static int drum_ok(const pet_t *p, const uint16_t *b)
 {
     switch (p->stage) {
     case ST_EGG:   return (b[LK] & BEATS) == BEATS;
-    case ST_BABY:  return (b[LK] & BEATS) == BEATS && pc16(b[LH]) >= 2u;
-    case ST_CHILD: return (b[LS] & BACK) == BACK && (b[LK] & 1u) && pc16(b[LH]) >= 4u;
+    case ST_BABY:
+    case ST_CHILD: {                            /* the song's hits all there, at most two extra */
+        const song_t *sg = song_for(LIB_DRUMS, p->stage);
+        uint32_t l, extra = 0;
+        for (l = 0; l < NLANE; l++) {
+            if ((b[l] & sg->lane[l]) != sg->lane[l]) return 0;
+            extra += pc16(b[l] & ~sg->lane[l]);
+        }
+        return extra <= 2u;
+    }
     case ST_TEEN:  return (b[LS] & BACK) == BACK && ((b[LK] & ~BEATS & 0xFFFFu) || p->swing >= 32u);
     default:       return drum_form(b) == p->form;
     }
@@ -234,12 +258,21 @@ static uint32_t bass_form(const bassinfo_t *b)
     if (b->octj >= 3u) return 2;                /* disco */
     return 3;                                   /* funk */
 }
-static int bass_ok(const pet_t *p, uint32_t gate, const bassinfo_t *b)
+static int song_bass_ok(const song_t *sg, uint32_t gate, const uint8_t *note)
+{
+    uint32_t i, extra = 0;
+    for (i = 0; i < 16u; i++) {
+        if (sg->gate >> i & 1u) { if (!(gate >> i & 1u) || note[i] % 12u != sg->note[i]) return 0; }
+        else if (gate >> i & 1u) extra++;
+    }
+    return extra <= 1u;
+}
+static int bass_ok(const pet_t *p, uint32_t gate, const uint8_t *note, const bassinfo_t *b)
 {
     switch (p->stage) {
     case ST_EGG:   return gate & 1u;
-    case ST_BABY:  return (gate & BEATS) == BEATS;
-    case ST_CHILD: return b->distinct >= 2u && b->related;
+    case ST_BABY:
+    case ST_CHILD: return song_bass_ok(song_for(LIB_BASS, p->stage), gate, note);
     case ST_TEEN:  return (gate & OFF8) != 0u && b->distinct >= 2u;
     default:       return bass_form(b) == p->form;
     }
@@ -284,7 +317,7 @@ static void eat_bar(void)
     for (i = 0; i < NLANE; i++) d[i] = bar_drum[i];
     for (i = 0; i < 16u; i++) bn[i] = bar_bnote[i];
     if (P->lib == LIB_DRUMS) { hits = pc16(d[LK]) + pc16(d[LS]) + pc16(d[LH]); ok = drum_ok(P, d); f = drum_form(d); }
-    else { bi = bass_look(gate, bn); hits = bi.n; ok = bass_ok(P, gate, &bi); f = bass_form(&bi); }
+    else { bi = bass_look(gate, bn); hits = bi.n; ok = bass_ok(P, gate, bn, &bi); f = bass_form(&bi); }
     P->bars++;
     if (P->stage != ST_EGG && hits >= 3u) {
         P->hunger = P->hunger > 3u ? (uint16_t)(P->hunger - 3u) : 0u;
@@ -450,11 +483,75 @@ static void draw_pet(int bob)                   /* 46..158 */
     if (!anim_of(P) && asleep()) cv_text(176, 30, &FONT_S, "z z", C_LO);
     cv_blit(0, 46);
 }
+/* ---- the guide: what to do next, in words, with the keys and the button to press blinking */
+#define NO_BTN 0xFFu
+static const char *guide_txt;                  /* 0: nothing to point at, show the lesson */
+static uint16_t guide_bits;                     /* steps to tap in the selected lane (they blink) */
+static uint32_t guide_btn = NO_BTN;             /* a button to press (it blinks) */
+static uint32_t guide_note = 0xFFu;            /* bass: the note key to press, semitones above the key root */
+static const char *const PICK_ROW[NLANE] = {"Pick the KICK row: OCT-", "Pick the SNARE row: OCT", "Pick the HAT row: OCT+"};
+static int lesson_now(void)                     /* would the pattern as it stands pass the lesson? */
+{
+    if (P->lib == LIB_DRUMS) return drum_ok(P, P->lane);
+    { bassinfo_t bi = bass_look(P->gate, P->note); return bass_ok(P, P->gate, P->note, &bi); }
+}
+static void compute_guide(void)
+{
+    uint16_t want[NLANE] = {0, 0, 0};
+    uint32_t l;
+    guide_txt = 0; guide_bits = 0; guide_btn = NO_BTN; guide_note = 0xFFu;
+    if (P->stage < ST_ADULT) {
+        if (P->lib == LIB_DRUMS) {
+            switch (P->stage) {
+            case ST_EGG:   want[LK] = BEATS; break;
+            case ST_BABY:
+            case ST_CHILD: { const song_t *sg = song_for(LIB_DRUMS, P->stage); for (l = 0; l < NLANE; l++) want[l] = sg->lane[l]; break; }
+            default:       want[LS] = BACK; if (!(P->lane[LK] & ~BEATS & 0xFFFFu) && P->swing < 32u) want[LK] = 1u << 10; break;
+            }
+            for (l = 0; l < NLANE; l++) {
+                uint16_t miss = (uint16_t)(want[l] & ~P->lane[l]);
+                if (!miss) continue;
+                if (l != lane) {
+                    guide_txt = l == LS ? (lane < LS ? "Pick the SNARE row: OCT+" : "Pick the SNARE row: OCT-") : PICK_ROW[l];
+                    guide_btn = l > lane ? BTN_OCT_UP : BTN_OCT_DOWN;
+                } else { guide_bits = miss; guide_txt = "Tap the blinking keys"; }
+                return;
+            }
+        } else {
+            uint16_t w = 0;
+            switch (P->stage) {
+            case ST_EGG:   w = 1u; break;
+            case ST_BABY:
+            case ST_CHILD: {                    /* the song, one note at a time: pick the note, then tap its step */
+                const song_t *sg = song_for(LIB_BASS, P->stage);
+                for (l = 0; l < 16u; l++) {
+                    if (sg->gate >> l & 1u) {
+                        if ((P->gate >> l & 1u) && P->note[l] % 12u == sg->note[l]) continue;
+                        if (cur_note % 12u != sg->note[l]) { guide_note = sg->note[l]; guide_txt = "Press the blinking note"; }
+                        else { guide_bits = (uint16_t)(1u << l); guide_txt = "Tap the blinking step"; }
+                        return;
+                    }
+                    if (P->gate >> l & 1u) { guide_bits = (uint16_t)(1u << l); guide_txt = "Tap to take this one off"; return; }
+                }
+                break;
+            }
+            default:       if (!(P->gate & OFF8)) w = 1u << 14; break;
+            }
+            if (w & ~P->gate) { guide_bits = (uint16_t)(w & ~P->gate); guide_txt = "Tap the blinking keys"; return; }
+        }
+        if (!lesson_now()) return;              /* the lesson line says what is still missing */
+    }
+    if (!playing) { guide_txt = P->stage == ST_EGG ? "Now press PLAY" : "Press PLAY to feed it"; guide_btn = BTN_PLAY; }
+}
+
 static void draw_words(void)                    /* 158..192 */
 {
     cv_begin(240, 34, C_BG);
-    cv_text(6, 2, &FONT_S, fm1_ms < say_until ? say
-            : P->stage < ST_ADULT ? LESSON[P->lib][P->stage] : ADULT_TIP[P->lib][P->form & 3u], C_INK);
+    if (fm1_ms < say_until) cv_text(6, 2, &FONT_S, say, C_INK);
+    else if (guide_txt) {                       /* the next thing to do, with an arrow */
+        cv_rect(6, 6, 8, 8, C_INK);
+        cv_text(20, 2, &FONT_S, guide_txt, C_INK);
+    } else cv_text(6, 2, &FONT_S, P->stage < ST_ADULT ? LESSON[P->lib][P->stage] : ADULT_TIP[P->lib][P->form & 3u], C_INK);
     if (P->stage < ST_ADULT) {
         box(6, 24, 228, 6, C_LO);
         cv_rect(7, 25, (int32_t)(226u * P->prog / NEED[P->stage]), 4, C_INK);
@@ -475,7 +572,11 @@ static void draw_grid(void)                     /* 192..240 */
                 int32_t x = 32 + (int32_t)s * 13 + (int32_t)(s / 4u);
                 int on = P->lane[l] >> s & 1u, here = playing && s == step;
                 if (on) cv_rect(x, y, 11, 13, here ? C_LO : C_INK);
-                else { box(x, y, 11, 13, s % 4u == 0 ? C_INK : C_LO); if (here) cv_rect(x + 2, y + 2, 7, 9, C_LO); }
+                else {
+                    box(x, y, 11, 13, s % 4u == 0 ? C_INK : C_LO);
+                    if (here) cv_rect(x + 2, y + 2, 7, 9, C_LO);
+                    if (l == lane && (guide_bits >> s & 1u)) cv_rect(x + 4, y + 5, 3, 3, C_INK);   /* tap here */
+                }
             }
         }
     } else {                                    /* bass: a column per step, the note as height */
@@ -483,7 +584,8 @@ static void draw_grid(void)                     /* 192..240 */
         static const char *const NN[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
         put_u(cat(b, NN[cur_note % 12u]), cur_note / 12u - 1u);
         cv_rect(4, 2, 24, 44, C_INK);
-        cv_text(16 - text_w(&FONT_S, b) / 2, 14, &FONT_S, b, C_BG);
+        cv_text(16 - text_w(&FONT_S, b) / 2, 6, &FONT_S, b, C_BG);
+        if (guide_note != 0xFFu) { cv_text(16 - text_w(&FONT_S, NN[guide_note % 12u]) / 2, 26, &FONT_S, NN[guide_note % 12u], C_BG); cv_rect(6, 24, 20, 1, C_BG); }
         for (s = 0; s < 16u; s++) {
             int32_t x = 32 + (int32_t)s * 13 + (int32_t)(s / 4u);
             int here = playing && s == step;
@@ -494,6 +596,7 @@ static void draw_grid(void)                     /* 192..240 */
                 if (hgt < 4) hgt = 4;
                 if (here) box(x, 44 - hgt, 11, hgt, C_INK); else cv_rect(x, 44 - hgt, 11, hgt, C_INK);
             } else if (here) cv_rect(x, 40, 11, 4, C_LO);
+            if (guide_bits >> s & 1u) { box(x, 30, 11, 11, C_INK); cv_rect(x + 4, 34, 3, 3, C_INK); }   /* tap here */
         }
     }
     cv_blit(0, 192);
@@ -541,7 +644,8 @@ static void draw_nest(void)
 {
     build_nest();
     draw_list("NEST", rowp, rowdim, 0, nrows, 17,
-              release_ms && fm1_ms - release_ms < 3000u ? "SEQ again: release it" : "SEL open   SEQ release");
+              release_ms && fm1_ms - release_ms < 3000u ? "SEQ again: release it"
+              : nrows <= 2u ? "Press SEL to get an egg" : "SEL open   SEQ release");
 }
 static void draw_pick(void)
 {
@@ -551,7 +655,7 @@ static void draw_pick(void)
         if (!LIB_READY[i]) cat(q, "  (soon)");
         rowp[i] = rowbuf[i]; rowdim[i] = (uint8_t)!LIB_READY[i]; rowicon[i] = LIB_ICON[i];
     }
-    draw_list("PICK A LIBRARY", rowp, rowdim, rowicon, NLIB, 30, "SEL: get an egg   HOME back");
+    draw_list("PICK A LIBRARY", rowp, rowdim, rowicon, NLIB, 30, "OCT move   SEL pick");
 }
 static void draw_hatch(void)
 {
@@ -565,7 +669,7 @@ static void draw_hatch(void)
     cv_blit(0, 66);
     cat(cat(b, LIB_NAME[P->lib]), " egg");
     draw_text_box(0, 194, 240, &FONT_S, b, C_INK, 1);
-    draw_text_box(0, 218, 240, &FONT_S, "SEL: start raising it", C_LO, 1);
+    draw_text_box(0, 218, 240, &FONT_S, "Press SEL to start", C_LO, 1);
 }
 static void draw_band(int bob)
 {
@@ -632,7 +736,7 @@ static void go(uint32_t m)
     stop_ms = t_sec = fm1_ms;
     redraw = 0xFFu;
     for (uint32_t l = 0; l < 27u; l++) fm1_led_key(KEY_LED(l), 0);
-    fm1_led_key(BTN_PLAY, 0);
+    fm1_led_key(BTN_PLAY, 0); fm1_led_key(BTN_SEL, 0); fm1_led_key(BTN_OCT_UP, 0); fm1_led_key(BTN_OCT_DOWN, 0);
 }
 
 static void band_cycle(uint32_t part, int32_t dir)   /* the next pet of this library for this part, or none */
@@ -702,11 +806,13 @@ static void app_main(void)
                 if (mode != M_NEST && mode != M_PICK) continue;   /* the new screen draws itself */
             }
             if (redraw) { if (mode == M_NEST) draw_nest(); else draw_pick(); redraw = 0; }
+            fm1_led_key(BTN_SEL, (int)(fm1_ms / 180u & 1u));
             continue;
         }
         if (mode == M_HATCH) {
-            if (b & (1u << BTN_SEL)) { go(M_RAISE); say_it("An egg. It's warm.", 2500); continue; }
+            if (b & (1u << BTN_SEL)) { go(M_RAISE); say_it("An egg! Let's wake it up", 2500); continue; }
             if (redraw) { draw_hatch(); redraw = 0; }
+            fm1_led_key(BTN_SEL, (int)(fm1_ms / 180u & 1u));
             continue;
         }
 
@@ -786,7 +892,8 @@ static void app_main(void)
             }
             if (down & 0xFFFFu) {
                 for (l = 0; l < 16u; l++) if (down >> l & 1u) {
-                    if (P->gate >> l & 1u) P->gate &= (uint16_t)~(1u << l);
+                    if ((P->gate >> l & 1u) && P->note[l] == cur_note) P->gate &= (uint16_t)~(1u << l);
+                    else if (P->gate >> l & 1u) { P->note[l] = (uint8_t)cur_note; if (!playing) { b_req_note = cur_note; trig_req |= 16u; } }
                     else { P->gate |= (uint16_t)(1u << l); P->note[l] = (uint8_t)cur_note; if (!playing) { b_req_note = cur_note; trig_req |= 16u; } }
                 }
                 redraw |= 4u; dirty |= 1u;
@@ -811,18 +918,33 @@ static void app_main(void)
                                | (uint32_t)asleep() << 3 | (uint32_t)(P->mood >= 70u) << 4 | (uint32_t)(P->hunger > 70u || P->mood < 30u) << 5;
             if (now_icons != icons_was) { icons_was = now_icons; redraw |= 9u; }
         }
+        {
+            const char *gt = guide_txt;
+            uint16_t gb = guide_bits;
+            uint32_t gn = guide_note;
+            compute_guide();
+            if (gt != guide_txt) redraw |= 2u;
+            if (gb != guide_bits || gn != guide_note) redraw |= 4u;
+        }
         if (redraw & 1u) draw_top();
         if (redraw & 9u) draw_pet(bob);
         if (redraw & 2u) draw_words();
         if (redraw & 4u) draw_grid();
         redraw = 0;
-        for (l = 0; l < 16u; l++) {
-            int on = (int)((P->lib == LIB_DRUMS ? P->lane[lane] : P->gate) >> l & 1u);
-            if (playing && l == step) on = !on;
-            fm1_led_key(KEY_LED(l), on);
+        {
+            int blink = (int)(fm1_ms / 180u & 1u);
+            for (l = 0; l < 16u; l++) {
+                int on = (int)((P->lib == LIB_DRUMS ? P->lane[lane] : P->gate) >> l & 1u);
+                if (playing && l == step) on = !on;
+                if (guide_bits >> l & 1u) on = blink;
+                fm1_led_key(KEY_LED(l), on);
+            }
+            fm1_led_key(BTN_OCT_DOWN, guide_btn == BTN_OCT_DOWN && blink);
+            fm1_led_key(BTN_OCT_UP, guide_btn == BTN_OCT_UP && blink);
         }
         for (l = 0; l < 11u; l++)
-            fm1_led_key(KEY_LED(16u + l), P->lib == LIB_BASS && cur_note == 36u + (uint32_t)((int32_t)(int8_t)P->oct * 12) + l);
-        fm1_led_key(BTN_PLAY, (int)playing);
+            fm1_led_key(KEY_LED(16u + l), P->lib == LIB_BASS && (guide_note != 0xFFu ? (l == guide_note && (fm1_ms / 180u & 1u))
+                                          : cur_note == 36u + (uint32_t)((int32_t)(int8_t)P->oct * 12) + l));
+        fm1_led_key(BTN_PLAY, guide_btn == BTN_PLAY ? (int)(fm1_ms / 180u & 1u) : (int)playing);
     }
 }
